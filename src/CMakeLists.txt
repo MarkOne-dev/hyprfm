@@ -20,6 +20,7 @@ set(HYPRFM_SOURCES
     services/previewservice.cpp
     services/diskusageservice.cpp
     services/remoteaccessservice.cpp
+    services/rcloneservice.cpp
     services/runtimefeaturesservice.cpp
     services/dependencychecker.cpp
     services/gitstatusservice.cpp
