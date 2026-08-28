@@ -330,8 +330,10 @@ void GitStatusService::markParentsDirty(const QString &filePath)
 
 bool GitStatusService::isRemotePath(const QString &path) const
 {
+    static const QString mountsDir = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts");
     return path.startsWith(QStringLiteral("smb://")) ||
            path.startsWith(QStringLiteral("sftp://")) ||
            path.startsWith(QStringLiteral("ftp://")) ||
-           path.startsWith(QStringLiteral("trash://"));
+           path.startsWith(QStringLiteral("trash://")) ||
+           path.startsWith(mountsDir);
 }

@@ -93,6 +93,10 @@ bool isUriPath(const QString &path)
 
 bool isRemoteUriPath(const QString &path)
 {
+    static const QString mountsDir = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts");
+    if (path.startsWith(mountsDir))
+        return true;
+
     const QUrl url(path);
     return url.isValid() && !url.scheme().isEmpty()
         && url.scheme() != QStringLiteral("file")
