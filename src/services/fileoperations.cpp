@@ -93,10 +93,6 @@ bool isUriPath(const QString &path)
 
 bool isRemoteUriPath(const QString &path)
 {
-    static const QString mountsDir = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts");
-    if (path.startsWith(mountsDir))
-        return true;
-
     const QUrl url(path);
     return url.isValid() && !url.scheme().isEmpty()
         && url.scheme() != QStringLiteral("file")
@@ -1600,7 +1596,11 @@ bool FileOperations::pathExists(const QString &path) const
 
 bool FileOperations::isRemotePath(const QString &path) const
 {
-    return isRemoteUriPath(normalizeLocation(path));
+    static const QString mountsDir = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts");
+    const QString normalized = normalizeLocation(path);
+    if (normalized.startsWith(mountsDir))
+        return true;
+    return isRemoteUriPath(normalized);
 }
 
 QString FileOperations::parentPath(const QString &path) const
