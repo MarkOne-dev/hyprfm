@@ -1596,9 +1596,9 @@ bool FileOperations::pathExists(const QString &path) const
 
 bool FileOperations::isRemotePath(const QString &path) const
 {
-    static const QString mountsDir = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts");
+    static const QString prefix = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts/");
     const QString normalized = normalizeLocation(path);
-    if (normalized.startsWith(mountsDir))
+    if (normalized.startsWith(prefix))
         return true;
     return isRemoteUriPath(normalized);
 }

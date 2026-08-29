@@ -22,6 +22,7 @@ public:
     Q_INVOKABLE QStringList getRemotes();
     Q_INVOKABLE bool isRclonePath(const QString &path) const;
     Q_INVOKABLE bool isMounted(const QString &remoteName) const;
+    Q_INVOKABLE bool isMounting(const QString &remoteName) const;
     Q_INVOKABLE bool isMountedForPath(const QString &path) const;
     Q_INVOKABLE void mountRemote(const QString &remoteName);
     Q_INVOKABLE void unmountRemote(const QString &remoteName);

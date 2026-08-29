@@ -76,23 +76,18 @@ QStringList RcloneService::getRemotes()
 
 bool RcloneService::isRclonePath(const QString &path) const
 {
-    if (!path.startsWith(m_mountsBaseDir))
-        return false;
-
-    if (path.length() <= m_mountsBaseDir.length())
-        return false;
-
-    QString sub = path.mid(m_mountsBaseDir.length());
-    if (sub.startsWith(QLatin1Char('/'))) {
-        sub = sub.mid(1);
-    }
-
-    return !sub.isEmpty();
+    const QString prefix = m_mountsBaseDir + QStringLiteral("/");
+    return path.startsWith(prefix) && path.length() > prefix.length();
 }
 
 bool RcloneService::isMounted(const QString &remoteName) const
 {
-    return m_processes.contains(remoteName);
+    return m_processes.contains(remoteName) && m_mountSuccessEmitted.value(remoteName);
+}
+
+bool RcloneService::isMounting(const QString &remoteName) const
+{
+    return m_processes.contains(remoteName) && !m_mountSuccessEmitted.value(remoteName);
 }
 
 bool RcloneService::isMountedForPath(const QString &path) const
@@ -133,6 +128,10 @@ void RcloneService::mountRemote(const QString &remoteName)
 
     if (isMounted(remoteName)) {
         emit mountFinished(remoteName, true, QString());
+        return;
+    }
+
+    if (isMounting(remoteName)) {
         return;
     }
 

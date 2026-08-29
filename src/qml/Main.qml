@@ -548,9 +548,11 @@ ApplicationWindow {
         if (rcloneService.isRclonePath(path)) {
             var remote = rcloneService.getRemoteNameFromPath(path)
             if (!rcloneService.isMounted(remote)) {
-                toast.show("Mounting cloud storage '" + remote + "'...", "info")
                 pendingCloudCallbacks.push({ remote: remote, callback: callback })
-                rcloneService.mountRemote(remote)
+                if (!rcloneService.isMounting(remote)) {
+                    toast.show("Mounting cloud storage '" + remote + "'...", "info")
+                    rcloneService.mountRemote(remote)
+                }
                 return
             }
         }

@@ -288,8 +288,8 @@ QString iconNameForMimeName(const QString &mimeName)
 
 QMimeType mimeTypeForFile(const QString &path)
 {
-    static const QString mountsDir = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts");
-    if (path.startsWith(mountsDir)) {
+    static const QString prefix = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts/");
+    if (path.startsWith(prefix)) {
         return mimeDb().mimeTypeForFile(path, QMimeDatabase::MatchExtension);
     }
     return mimeDb().mimeTypeForFile(path, QMimeDatabase::MatchDefault);
@@ -1355,8 +1355,8 @@ void FileSystemModel::ensurePopulated(const Entry &entry) const
     entry.sizeText = isDir ? QString() : formattedSize(entry.info.size());
     entry.modifiedText = QLocale().toString(entry.info.lastModified(), QLocale::ShortFormat);
 
-    static const QString mountsDir = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts");
-    const bool isRemote = absPath.startsWith(mountsDir);
+    static const QString prefix = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts/");
+    const bool isRemote = absPath.startsWith(prefix);
 
     if (isRemote) {
         entry.permissionsText = isDir ? QStringLiteral("drwxr-xr-x") : QStringLiteral("-rw-r--r--");
@@ -1573,8 +1573,8 @@ QVariantMap FileSystemModel::fileProperties(const QString &path) const
     if (isRemoteUri(normalizedPath))
         return remoteFileProperties(normalizedPath);
 
-    static const QString mountsDir = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts");
-    const bool isRemote = normalizedPath.startsWith(mountsDir);
+    static const QString prefix = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts/");
+    const bool isRemote = normalizedPath.startsWith(prefix);
 
     QFileInfo info(normalizedPath);
     QVariantMap props;
@@ -1664,6 +1664,7 @@ QVariantMap FileSystemModel::fileProperties(const QString &path) const
         props["groupAccess"] = 1;
         props["otherAccess"] = 1;
         props["isExecutable"] = false;
+        props["canEditPermissions"] = false;
     } else {
         // Timestamps
         props["created"] = QLocale().toString(info.birthTime(), QLocale::LongFormat);
