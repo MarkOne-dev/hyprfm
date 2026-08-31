@@ -1454,6 +1454,46 @@ private slots:
         QVERIFY(QFile::exists(extractDir.path() + "/payload/inner.txt"));
     }
 
+    // An archive nothing on this system can open used to fail in total silence:
+    // extractArchive() returned -1 and the caller dropped it, so pressing Enter
+    // on the file did nothing at all. It has to say why.
+    void testUnsupportedArchiveReportsWhyItFailed()
+    {
+        TestDir dir;
+        TestDir extractDir;
+        // A suffix no extractor claims, so the "no tool for this" path runs
+        // whatever happens to be installed on the machine running the test.
+        dir.createFile("mystery.madeupzip", "not really an archive");
+        const QString archivePath = dir.path() + "/mystery.madeupzip";
+
+        FileOperations ops;
+        QSignalSpy finishSpy(&ops, &FileOperations::operationFinished);
+
+        QCOMPARE(ops.extractArchive(archivePath, extractDir.path()), -1);
+        QCOMPARE(finishSpy.count(), 1);
+        QCOMPARE(finishSpy.at(0).at(0).toBool(), false);
+        const QString error = finishSpy.at(0).at(1).toString();
+        QVERIFY2(!error.isEmpty(), "failed without saying anything");
+        QVERIFY2(error.contains(QStringLiteral("Install"), Qt::CaseInsensitive),
+                 qPrintable(error));
+    }
+
+    // Same for a format the compressor does not know.
+    void testUnknownCompressFormatReportsWhyItFailed()
+    {
+        TestDir dir;
+        dir.createFile("a.txt", "x");
+
+        FileOperations ops;
+        QSignalSpy finishSpy(&ops, &FileOperations::operationFinished);
+
+        QCOMPARE(ops.compressFiles({dir.path() + "/a.txt"}, QStringLiteral("rar")), -1);
+        QCOMPARE(finishSpy.count(), 1);
+        QCOMPARE(finishSpy.at(0).at(0).toBool(), false);
+        QVERIFY2(finishSpy.at(0).at(1).toString().contains(QStringLiteral("rar")),
+                 qPrintable(finishSpy.at(0).at(1).toString()));
+    }
+
     void testCompressionDoesNotExecuteFileNames_data()
     {
         QTest::addColumn<QString>("format");

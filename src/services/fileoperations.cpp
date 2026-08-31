@@ -801,6 +801,24 @@ ArchiveKind archiveKindForPath(const QString &path)
     return ArchiveKind::None;
 }
 
+// A failure the user can act on: name the binary that is missing rather than
+// reporting "Failed to start compression", which reads like a disk error.
+QString missingToolMessage(const QString &program)
+{
+    return QStringLiteral("Could not run '%1'. Install it and try again "
+                          "(see Settings for the full list of optional tools).")
+        .arg(program);
+}
+
+// Nothing on this system can handle the archive at all.
+QString missingArchiveToolMessage(const QString &archivePath)
+{
+    const QString suffix = QFileInfo(archivePath).completeSuffix();
+    return QStringLiteral("No tool installed that can extract .%1 archives. "
+                          "Install 7z, bsdtar or tar and try again.")
+        .arg(suffix.isEmpty() ? QStringLiteral("archive") : suffix);
+}
+
 bool archiveExtractCommand(const QString &archivePath, const QString &destination,
                            const QString &password,
                            QString *program, QStringList *args)
@@ -1670,8 +1688,13 @@ void FileOperations::openFile(const QString &path)
 
     proc->deleteLater();
     const QUrl url = QUrl::fromLocalFile(normalized);
-    if (!QDesktopServices::openUrl(url))
-        qWarning() << "FileOperations::openFile: failed to open" << normalized;
+    if (!QDesktopServices::openUrl(url)) {
+        // Logged only, once: double-clicking a file with no registered handler
+        // did nothing whatsoever from the user's side.
+        emit operationFinished(false,
+            QStringLiteral("Nothing is set up to open %1")
+                .arg(locationFileName(normalized)));
+    }
 }
 
 bool FileOperations::pathExists(const QString &path) const
@@ -2092,6 +2115,7 @@ int FileOperations::compressFiles(const QStringList &paths, const QString &forma
         for (const auto &p : paths)
             args.append(QFileInfo(p).fileName());
     } else {
+        emit operationFinished(false, QStringLiteral("Unsupported archive format: %1").arg(format));
         return -1;
     }
 
@@ -2124,7 +2148,7 @@ int FileOperations::compressFiles(const QStringList &paths, const QString &forma
             pr.setProcessChannelMode(QProcess::MergedChannels);
             pr.start(program, args);
             if (!pr.waitForStarted(5000))
-                return QStringLiteral("Failed to start compression");
+                return missingToolMessage(program);
             processId->storeRelaxed(static_cast<int>(pr.processId()));
             if (pauseRequested->loadRelaxed())
                 suspendProcess(processId.data());
@@ -2171,8 +2195,12 @@ int FileOperations::extractArchive(const QString &archivePath, const QString &de
 {
     QString program;
     QStringList args;
-    if (!archiveExtractCommand(archivePath, destination, password, &program, &args))
+    if (!archiveExtractCommand(archivePath, destination, password, &program, &args)) {
+        // Used to return -1 in silence, and the caller dropped it: pressing
+        // Enter on a .7z with no 7z installed did visibly nothing at all.
+        emit operationFinished(false, missingArchiveToolMessage(archivePath));
         return -1;
+    }
 
     // Add verbose flag for progress tracking
     QStringList verboseArgs = args;
@@ -2234,7 +2262,7 @@ int FileOperations::extractArchive(const QString &archivePath, const QString &de
             pr.setProcessChannelMode(QProcess::MergedChannels);
             pr.start(program, verboseArgs);
             if (!pr.waitForStarted(5000))
-                return QStringLiteral("Failed to start extraction");
+                return missingToolMessage(program);
             processId->storeRelaxed(static_cast<int>(pr.processId()));
             if (pauseRequested->loadRelaxed())
                 suspendProcess(processId.data());
@@ -2756,11 +2784,19 @@ void FileOperations::setWallpaper(const QString &path)
     const QString resolved = QFileInfo(path).absoluteFilePath();
     auto *proc = new QProcess(this);
     connect(proc, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
-            this, [proc, resolved](int exitCode, QProcess::ExitStatus) {
-                if (exitCode != 0)
-                    qWarning() << "FileOperations::setWallpaper: hyprctl failed for" << resolved;
+            this, [this, proc](int exitCode, QProcess::ExitStatus) {
+                if (exitCode != 0) {
+                    const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                    emit operationFinished(false, err.isEmpty()
+                        ? QStringLiteral("Could not set the wallpaper. Is hyprpaper running?")
+                        : QStringLiteral("Could not set the wallpaper: %1").arg(err));
+                }
                 proc->deleteLater();
             });
+    connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError) {
+        emit operationFinished(false, missingToolMessage(QStringLiteral("hyprctl")));
+        proc->deleteLater();
+    });
     proc->start(QStringLiteral("hyprctl"),
                 {QStringLiteral("hyprpaper"), QStringLiteral("wallpaper"),
                  QStringLiteral(",") + resolved});

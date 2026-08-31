@@ -234,6 +234,58 @@ void DependencyChecker::populate()
         })
     });
 
+    // Archive handling. Each shells out, and without the binary the matching
+    // context-menu entry fails, so they belong in this list even though the
+    // app runs fine otherwise.
+    m_deps.append({
+        QStringLiteral("tar"),
+        QStringLiteral("tar"),
+        QStringLiteral("Create and extract .tar, .tar.gz, .tar.xz and .tar.bz2 archives."),
+        Kind::Tool, false, hasExecutable(QStringLiteral("tar")),
+        {QStringLiteral("tar")},
+        buildHints(QStringLiteral("tar"))
+    });
+
+    m_deps.append({
+        QStringLiteral("zstd"),
+        QStringLiteral("zstd"),
+        QStringLiteral("Create and extract .tar.zst archives."),
+        Kind::Tool, false, hasExecutable(QStringLiteral("zstd")),
+        {QStringLiteral("zstd")},
+        buildHints(QStringLiteral("zstd"))
+    });
+
+    m_deps.append({
+        QStringLiteral("zip"),
+        QStringLiteral("zip / unzip"),
+        QStringLiteral("Create and extract .zip archives."),
+        Kind::Tool, false,
+        hasExecutable(QStringLiteral("zip")) && hasExecutable(QStringLiteral("unzip")),
+        {QStringLiteral("zip"), QStringLiteral("unzip")},
+        buildHints(QStringLiteral("zip unzip"), {
+            {QStringLiteral("alpine"), QStringLiteral("zip unzip")}
+        })
+    });
+
+    m_deps.append({
+        QStringLiteral("7zip"),
+        QStringLiteral("7-Zip"),
+        QStringLiteral("Create and extract .7z archives, and open password-protected ones."),
+        Kind::Tool, false,
+        hasExecutable(QStringLiteral("7z")) || hasExecutable(QStringLiteral("bsdtar")),
+        {QStringLiteral("7z"), QStringLiteral("bsdtar")},
+        buildHints(QStringLiteral("p7zip"), {
+            {QStringLiteral("debian"),   QStringLiteral("p7zip-full")},
+            {QStringLiteral("ubuntu"),   QStringLiteral("p7zip-full")},
+            {QStringLiteral("linuxmint"),QStringLiteral("p7zip-full")},
+            {QStringLiteral("pop"),      QStringLiteral("p7zip-full")},
+            {QStringLiteral("fedora"),   QStringLiteral("p7zip")},
+            {QStringLiteral("rhel"),     QStringLiteral("p7zip")},
+            {QStringLiteral("opensuse"), QStringLiteral("p7zip-full")},
+            {QStringLiteral("suse"),     QStringLiteral("p7zip-full")}
+        })
+    });
+
     m_deps.append({
         QStringLiteral("git"),
         QStringLiteral("git"),
