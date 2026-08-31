@@ -206,10 +206,6 @@ void RcloneService::startRcloneMountProcess(const QString &remoteName, const QSt
         QStringLiteral("writes"),
         QStringLiteral("--vfs-cache-max-age"),
         QStringLiteral("72h"),
-        QStringLiteral("--dir-cache-time"),
-        QStringLiteral("72h"),
-        QStringLiteral("--attr-timeout"),
-        QStringLiteral("72h"),
         QStringLiteral("--no-checksum"),
         QStringLiteral("--vfs-read-chunk-size"),
         QStringLiteral("1M"),
@@ -218,9 +214,7 @@ void RcloneService::startRcloneMountProcess(const QString &remoteName, const QSt
         QStringLiteral("--buffer-size"),
         QStringLiteral("32M"),
         QStringLiteral("--poll-interval"),
-        QStringLiteral("15s"),
-        QStringLiteral("-o"),
-        QStringLiteral("big_writes")
+        QStringLiteral("15s")
     });
 
     // Poll mountpoint checks every 100ms to verify FUSE mount is active
