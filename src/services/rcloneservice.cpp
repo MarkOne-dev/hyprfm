@@ -3,6 +3,7 @@
 #include "services/cloudmounts.h"
 
 #include <QDir>
+#include <QPointer>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QDebug>
@@ -167,6 +168,7 @@ void RcloneService::runUnmountTool(const QString &tool, const QString &mountPath
 void RcloneService::startRcloneMountProcess(const QString &remoteName, const QString &mountPath)
 {
     QProcess *proc = new QProcess(this);
+    const quint64 generation = ++m_mountGeneration[remoteName];
     m_processes.insert(remoteName, proc);
     m_mountSuccessEmitted[remoteName] = false;
     emit activeMountsChanged();
@@ -245,15 +247,24 @@ void RcloneService::startRcloneMountProcess(const QString &remoteName, const QSt
         }
     });
 
-    // Timeout safety: if it doesn't mount in 10 seconds, abort
-    QTimer::singleShot(10000, this, [this, remoteName, mountTimer]() {
-        if (m_processes.contains(remoteName) && !m_mountSuccessEmitted.value(remoteName)) {
-            mountTimer->stop();
-            mountTimer->deleteLater();
+    // Timeout safety: if it doesn't mount in 10 seconds, abort. The poll timer
+    // deletes itself as soon as the process is gone, so hold it weakly, and
+    // bail out when a newer attempt has taken over this remote -- otherwise a
+    // remount inside the timeout window would tear down the fresh mount.
+    QPointer<QTimer> pollTimer(mountTimer);
+    QTimer::singleShot(10000, this, [this, remoteName, generation, pollTimer]() {
+        if (m_mountGeneration.value(remoteName) != generation)
+            return;
+        if (!m_processes.contains(remoteName) || m_mountSuccessEmitted.value(remoteName))
+            return;
 
-            unmountRemote(remoteName);
-            emit mountFinished(remoteName, false, QStringLiteral("Mount operation timed out. Verify your rclone remote or network connection."));
+        if (pollTimer) {
+            pollTimer->stop();
+            pollTimer->deleteLater();
         }
+
+        unmountRemote(remoteName);
+        emit mountFinished(remoteName, false, QStringLiteral("Mount operation timed out. Verify your rclone remote or network connection."));
     });
 
     mountTimer->start(100);

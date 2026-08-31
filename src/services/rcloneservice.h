@@ -48,4 +48,7 @@ private:
     QString m_mountsBaseDir;
     QHash<QString, QProcess*> m_processes;
     QHash<QString, bool> m_mountSuccessEmitted;
+    // Bumped per mount attempt so a timeout fired for an abandoned attempt
+    // cannot tear down the mount that replaced it.
+    QHash<QString, quint64> m_mountGeneration;
 };
