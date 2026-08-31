@@ -826,7 +826,7 @@ Item {
         case "compress_tarxz": fileOps.compressFiles(effectivePaths, "tar.xz"); break
         case "compress_tarbz2": fileOps.compressFiles(effectivePaths, "tar.bz2"); break
         case "compress_tar": fileOps.compressFiles(effectivePaths, "tar"); break
-        case "extract": fileOps.extractArchive(targetPath, effectiveDir); break
+        case "extract": fileOps.extractArchive(targetPath, effectiveDir, fileOps.archivePassword(targetPath)); break
         case "setwallpaper": fileOps.setWallpaper(targetPath); break
         case "emptytrash": emptyTrashRequested(); break
         default:

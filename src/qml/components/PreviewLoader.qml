@@ -28,6 +28,10 @@ QtObject {
     // "text" | "pdf" | "archive" | "directory" | "" (metadata only)
     property string kind: ""
 
+    // Only meaningful for encrypted archives. Set by the owner alongside
+    // `path`, and read at dispatch time for the same reason.
+    property string password: ""
+
     // True from dispatch until the matching result lands.
     property bool loading: false
 
@@ -75,7 +79,8 @@ QtObject {
         interval: 80
         onTriggered: {
             loader.loading = loader.kind !== ""
-            previewService.requestPreview(loader.requester, loader.path, loader.kind)
+            previewService.requestPreview(loader.requester, loader.path, loader.kind,
+                                          loader.password)
         }
     }
 

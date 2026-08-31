@@ -94,6 +94,7 @@ list(APPEND hyprfm_qml_module_args
         qml/views/KineticWheelScroller.qml
         qml/components/ContextMenu.qml
         qml/components/BulkRenameDialog.qml
+        qml/components/ArchivePasswordDialog.qml
         qml/components/RemoteConnectDialog.qml
         qml/components/PreviewLoader.qml
         qml/components/QuickPreview.qml

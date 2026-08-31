@@ -4,14 +4,17 @@
 #include <QTemporaryDir>
 #include <QFile>
 #include <QDir>
+#include <QDirIterator>
 #include <QGuiApplication>
 #include <QImage>
 #include <QMimeData>
 #include <QProcess>
+#include <QRandomGenerator>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QUrl>
 #include <QUuid>
+#include <cstring>
 #include <unistd.h>
 #include "testdir.h"
 #include "services/fileoperations.h"
@@ -64,14 +67,36 @@ class TestFileOperations : public QObject
     }
 
     static bool runCommand(const QString &program, const QStringList &args,
-                           const QString &workingDirectory = {})
+                           const QString &workingDirectory = {}, int timeoutMs = 5000)
     {
         QProcess proc;
         if (!workingDirectory.isEmpty())
             proc.setWorkingDirectory(workingDirectory);
 
         proc.start(program, args);
-        return proc.waitForFinished(5000) && proc.exitCode() == 0;
+        return proc.waitForFinished(timeoutMs) && proc.exitCode() == 0;
+    }
+
+    // One-level archive with enough incompressible data that extraction lasts
+    // long enough to pause or cancel mid-flight. Empty on failure.
+    static QString createWideArchive(TestDir &archiveDir, int fileCount, int perFileBytes)
+    {
+        QRandomGenerator rng(12345);
+        for (int i = 0; i < fileCount; ++i) {
+            QByteArray data(perFileBytes, Qt::Uninitialized);
+            const int fullWords = perFileBytes / 4;
+            for (int j = 0; j < fullWords; ++j) {
+                const quint32 v = rng.generate();
+                memcpy(data.data() + j * 4, &v, 4);
+            }
+            for (int j = fullWords * 4; j < perFileBytes; ++j)
+                data[j] = static_cast<char>(rng.generate() & 0xFF);
+            archiveDir.createFile("payload/f" + QString::number(i) + ".dat", data);
+        }
+        const QString archivePath = archiveDir.path() + "/wide.7z";
+        if (!runCommand("7z", {"a", archivePath, "payload"}, archiveDir.path(), 120000))
+            return {};
+        return archivePath;
     }
 
 private slots:
@@ -1174,6 +1199,229 @@ private slots:
         QVERIFY(spy.wait(5000));
         QCOMPARE(spy.at(0).at(0).toBool(), true);
         QVERIFY(QFile::exists(extractDir.path() + "/payload/inner.txt"));
+    }
+
+    // A password-protected archive must fail fast through the placeholder
+    // password (never block waiting for stdin), report "password required",
+    // and succeed once the real password is handed to the retry.
+    void testExtractPasswordProtectedArchive()
+    {
+        if (QStandardPaths::findExecutable(QStringLiteral("7z")).isEmpty())
+            QSKIP("7z not found in PATH");
+
+        TestDir archiveDir;
+        TestDir extractDir;
+        archiveDir.createDir("payload");
+        archiveDir.createFile("payload/inner.txt", "secret");
+        const QString archivePath = archiveDir.path() + "/locked_headers.7z";
+        QVERIFY(runCommand("7z",
+            {"a", "-ptest", "-mhe=on", archivePath, "payload"}, archiveDir.path()));
+        QVERIFY(QFile::exists(archivePath));
+
+        FileOperations ops;
+        QSignalSpy finishSpy(&ops, &FileOperations::operationFinished);
+        QSignalSpy passwordSpy(&ops, &FileOperations::passwordRequested);
+
+        ops.extractArchive(archivePath, extractDir.path(), QString());
+
+        QVERIFY(passwordSpy.wait(5000));
+        // Queued from the worker before it returns, so passwordRequested lands
+        // ahead of operationFinished. Wait rather than assume the order.
+        QTRY_COMPARE(finishSpy.count(), 1);
+        QCOMPARE(finishSpy.at(0).at(0).toBool(), false);
+        QCOMPARE(finishSpy.at(0).at(1).toString(), QStringLiteral("password required"));
+        QVERIFY(!QFile::exists(extractDir.path() + "/payload/inner.txt"));
+
+        finishSpy.clear();
+        ops.extractArchive(archivePath, extractDir.path(), QStringLiteral("test"));
+
+        QVERIFY(finishSpy.wait(5000));
+        QCOMPARE(finishSpy.at(0).at(0).toBool(), true);
+        QVERIFY(QFile::exists(extractDir.path() + "/payload/inner.txt"));
+    }
+
+    // Same contract as the 7z case, through unzip, which is present far more
+    // often than 7z (the runner has it and p7zip is a separate install). Keeps
+    // the password path covered even where the 7z tests skip.
+    void testExtractPasswordProtectedZip()
+    {
+        if (QStandardPaths::findExecutable(QStringLiteral("zip")).isEmpty()
+            || QStandardPaths::findExecutable(QStringLiteral("unzip")).isEmpty())
+            QSKIP("zip/unzip not found in PATH");
+
+        TestDir archiveDir;
+        TestDir extractDir;
+        archiveDir.createDir("payload");
+        archiveDir.createFile("payload/inner.txt", "secret");
+        const QString archivePath = archiveDir.path() + "/locked.zip";
+        QVERIFY(runCommand("zip", {"-q", "-P", "testpass", "-r", archivePath, "payload"},
+                           archiveDir.path()));
+        QVERIFY(QFile::exists(archivePath));
+
+        FileOperations ops;
+        QSignalSpy finishSpy(&ops, &FileOperations::operationFinished);
+        QSignalSpy passwordSpy(&ops, &FileOperations::passwordRequested);
+
+        ops.extractArchive(archivePath, extractDir.path(), QString());
+
+        QVERIFY(passwordSpy.wait(5000));
+        // First ask: nothing was cached, so this is not a retry.
+        QCOMPARE(passwordSpy.constFirst().at(2).toBool(), false);
+        // passwordRequested is queued from the worker before it returns, so it
+        // lands ahead of operationFinished. Wait rather than assume the order.
+        QTRY_COMPARE(finishSpy.count(), 1);
+        QCOMPARE(finishSpy.at(0).at(1).toString(), QStringLiteral("password required"));
+        QVERIFY(!QFile::exists(extractDir.path() + "/payload/inner.txt"));
+
+        // A wrong password must come back as a retry, so the dialog can say so.
+        ops.cacheArchivePassword(archivePath, QStringLiteral("wrongpass"));
+        passwordSpy.clear();
+        finishSpy.clear();
+        ops.extractArchive(archivePath, extractDir.path(), QStringLiteral("wrongpass"));
+
+        QVERIFY(passwordSpy.wait(5000));
+        QCOMPARE(passwordSpy.constFirst().at(2).toBool(), true);
+        QVERIFY(ops.archivePassword(archivePath).isEmpty());
+
+        finishSpy.clear();
+        ops.extractArchive(archivePath, extractDir.path(), QStringLiteral("testpass"));
+
+        QVERIFY(finishSpy.wait(5000));
+        QCOMPARE(finishSpy.at(0).at(0).toBool(), true);
+        QVERIFY(QFile::exists(extractDir.path() + "/payload/inner.txt"));
+    }
+
+    // A refused extraction used to leave the destination behind: unzip creates
+    // the directory entries before it discovers it cannot decrypt anything, so
+    // a bare "locked/payload/" tree appeared next to the archive and looked
+    // like the extraction had half worked.
+    void testRefusedExtractionLeavesNoEmptyFolder()
+    {
+        if (QStandardPaths::findExecutable(QStringLiteral("zip")).isEmpty()
+            || QStandardPaths::findExecutable(QStringLiteral("unzip")).isEmpty())
+            QSKIP("zip/unzip not found in PATH");
+
+        TestDir archiveDir;
+        archiveDir.createDir("payload");
+        archiveDir.createFile("payload/inner.txt", "secret");
+        const QString archivePath = archiveDir.path() + "/locked.zip";
+        QVERIFY(runCommand("zip", {"-q", "-P", "testpass", "-r", archivePath, "payload"},
+                           archiveDir.path()));
+
+        FileOperations ops;
+        const QString dest = ops.newExtractionFolder(archivePath);
+        QVERIFY(!dest.isEmpty());
+        QSignalSpy finishSpy(&ops, &FileOperations::operationFinished);
+
+        ops.extractArchive(archivePath, dest, QString());
+        QTRY_VERIFY_WITH_TIMEOUT(finishSpy.count() > 0, 10000);
+        QCOMPARE(finishSpy.at(0).at(1).toString(), QStringLiteral("password required"));
+        QVERIFY2(!QFileInfo::exists(dest),
+                 qPrintable(QStringLiteral("left behind: %1").arg(dest)));
+
+        // The retry after a wrong password reuses the same destination, so the
+        // cleanup has to survive more than one attempt.
+        finishSpy.clear();
+        ops.extractArchive(archivePath, dest, QStringLiteral("wrongpass"));
+        QTRY_VERIFY_WITH_TIMEOUT(finishSpy.count() > 0, 10000);
+        QCOMPARE(finishSpy.at(0).at(1).toString(), QStringLiteral("password required"));
+        QVERIFY2(!QFileInfo::exists(dest),
+                 qPrintable(QStringLiteral("retry left behind: %1").arg(dest)));
+
+        // ...and a correct password still extracts into it.
+        finishSpy.clear();
+        ops.cacheArchivePassword(archivePath, QStringLiteral("testpass"));
+        ops.extractArchive(archivePath, dest, QStringLiteral("testpass"));
+        QTRY_VERIFY_WITH_TIMEOUT(finishSpy.count() > 0, 10000);
+        QCOMPARE(finishSpy.at(0).at(0).toBool(), true);
+        QVERIFY(QFile::exists(dest + "/payload/inner.txt"));
+
+        // The archive is done with, so the password does not outlive it: held
+        // only while in use, the way Ark and File Roller scope it.
+        QTRY_VERIFY(ops.archivePassword(archivePath).isEmpty());
+    }
+
+    // Extracting via an external binary must stop promptly when cancelled;
+    // previously the transfer had no worker and the cancel was a no-op that
+    // let the extraction run to completion.
+    void testCancelStopsExtractionMidFlight()
+    {
+        if (QStandardPaths::findExecutable(QStringLiteral("7z")).isEmpty())
+            QSKIP("7z not found in PATH");
+
+        TestDir archiveDir;
+        TestDir extractDir;
+        const QString archivePath = createWideArchive(archiveDir, 300, 256 * 1024);
+        QVERIFY2(!archivePath.isEmpty(), "failed to create wide 7z archive");
+
+        FileOperations ops;
+        QSignalSpy finishSpy(&ops, &FileOperations::operationFinished);
+        const int id = ops.extractArchive(archivePath, extractDir.path());
+        QVERIFY(id >= 0);
+
+        QTRY_VERIFY_WITH_TIMEOUT(ops.busy(), 5000);
+        // Cancel once extraction has clearly started (7z created its output
+        // folder but cannot be done yet), so the operation must end early and
+        // report a failure rather than extracting every file.
+        QTRY_VERIFY_WITH_TIMEOUT(
+            QFileInfo(extractDir.path() + QLatin1String("/payload")).exists(), 10000);
+        ops.cancelTransfer(id);
+        QTRY_VERIFY_WITH_TIMEOUT(!ops.busy(), 8000);
+
+        QCOMPARE(finishSpy.count(), 1);
+        QCOMPARE(finishSpy.constFirst().at(0).toBool(), false);
+
+        int landed = 0;
+        bool allValid = true;
+        QDirIterator it(extractDir.path(), QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            it.next();
+            // Extracted names must match the archive's own payload/f<index>.dat
+            const QString name = it.fileName();
+            const int dot = name.lastIndexOf(QLatin1Char('.'));
+            bool ok = false;
+            const int index = name.mid(1, dot - 1).toInt(&ok);
+            if (!ok || index < 0 || index >= 300)
+                allValid = false;
+            ++landed;
+        }
+        QVERIFY2(landed < 300, qPrintable(
+            QStringLiteral("cancel did not stop extraction: %1 files").arg(landed)));
+        QVERIFY(allValid);
+    }
+
+    // Pausing an extraction freezes the underlying process, so the byte-based
+    // progress must stop moving until it is resumed.
+    void testPauseFreezesExtractProgress()
+    {
+        if (QStandardPaths::findExecutable(QStringLiteral("7z")).isEmpty())
+            QSKIP("7z not found in PATH");
+
+        TestDir archiveDir;
+        TestDir extractDir;
+        const QString archivePath = createWideArchive(archiveDir, 300, 256 * 1024);
+        QVERIFY2(!archivePath.isEmpty(), "failed to create wide 7z archive");
+
+        FileOperations ops;
+        QSignalSpy finishSpy(&ops, &FileOperations::operationFinished);
+        const int id = ops.extractArchive(archivePath, extractDir.path());
+        QVERIFY(id >= 0);
+
+        QTRY_VERIFY_WITH_TIMEOUT(ops.busy(), 5000);
+        QTRY_VERIFY(ops.progress() >= 0.0);
+
+        ops.pauseTransfer(id);
+        QVERIFY(ops.paused());
+        const double frozen = ops.progress();
+        QTest::qWait(800);
+        const double later = ops.progress();
+        QVERIFY2(later - frozen < 0.05, qPrintable(
+            QStringLiteral("progress moved while paused: %1 -> %2").arg(frozen).arg(later)));
+        ops.resumeTransfer(id);
+
+        if (finishSpy.isEmpty())
+            QVERIFY(finishSpy.wait(15000));
+        QCOMPARE(finishSpy.constFirst().at(0).toBool(), true);
     }
 
     void testCompressionDoesNotExecuteFileNames_data()

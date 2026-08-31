@@ -35,6 +35,45 @@ Item {
 
     signal closed()
     signal openRequested(string path, bool isDirectory)
+    signal unlockArchiveRequested(string filePath, bool retry)
+    signal unlockSucceeded()
+
+    // Set while a password the user just typed is being proved by a reload.
+    property bool _unlockPending: false
+
+    // The archive this preview unlocked, if any. The password lives only as
+    // long as the preview showing it, so moving to another file or closing
+    // the overlay forgets it, the way Ark and File Roller do.
+    property string _unlockedPath: ""
+
+    function _forgetUnlockedArchive() {
+        if (root._unlockedPath === "")
+            return
+        fileOps.clearArchivePassword(root._unlockedPath)
+        root._unlockedPath = ""
+    }
+
+    function reloadAfterUnlock() {
+        root._unlockPending = true
+        root.refreshPreviewData()
+    }
+
+    // The preview is the only thing that can tell us a password was wrong on
+    // this path: nothing extracts, so no operation reports back. If the reload
+    // still comes back locked, ask again and say so.
+    onDirectoryPreviewChanged: {
+        if (!root._unlockPending)
+            return
+        if (directoryPreview.requiresPassword === true) {
+            root._unlockPending = false
+            fileOps.clearArchivePassword(root.filePath)
+            root.unlockArchiveRequested(root.filePath, true)
+        } else if ((directoryPreview.entries || []).length > 0) {
+            root._unlockPending = false
+            root._unlockedPath = root.filePath
+            root.unlockSucceeded()
+        }
+    }
 
     readonly property string fileName: {
         if (fileProps.name)
@@ -236,6 +275,10 @@ Item {
             ? previewService.loadFontPreview(filePath)
             : ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
 
+        // Assigned, not bound: archivePassword() is a plain invokable with no
+        // NOTIFY, so a binding would never re-evaluate after the user unlocks
+        // the archive. reloadAfterUnlock() routes back through here.
+        previewLoader.password = isArchive ? fileOps.archivePassword(filePath) : ""
         previewLoader.reload()
     }
 
@@ -251,6 +294,7 @@ Item {
             openAnim.start()
             Qt.callLater(function() { root.forceActiveFocus() })
         } else if (visible) {
+            root._forgetUnlockedArchive()
             // Closing: stop any in-flight worker from doing pointless work
             // and from repainting a panel the user is no longer looking at.
             previewLoader.stop()
@@ -260,6 +304,9 @@ Item {
         }
     }
     onFilePathChanged: {
+        // Moving to another file ends the unlocked archive's life.
+        if (root._unlockedPath !== "" && root._unlockedPath !== root.filePath)
+            root._forgetUnlockedArchive()
         pdfHoldSource = ""
         pdfPageIndex = 0
         pdfWheelAccumulator = 0
@@ -880,6 +927,32 @@ Item {
                                 color: Theme.error
                                 font.pointSize: Theme.fontNormal
                                 wrapMode: Text.WordWrap
+                            }
+
+                            Rectangle {
+                                Layout.alignment: Qt.AlignHCenter
+                                visible: directoryPreview.requiresPassword === true
+                                implicitWidth: unlockMouse.containsMouse ? 132 : 124
+                                implicitHeight: 32
+                                radius: Theme.radiusMedium
+                                color: unlockMouse.containsMouse
+                                    ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.25)
+                                    : Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.14)
+                                Behavior on implicitWidth { NumberAnimation { duration: 100 } }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "Enter password"
+                                    color: Theme.text
+                                    font.pointSize: Theme.fontSmall
+                                }
+
+                                MouseArea {
+                                    id: unlockMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    onClicked: root.unlockArchiveRequested(root.filePath, false)
+                                }
                             }
 
                             Item {
