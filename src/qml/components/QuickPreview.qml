@@ -14,18 +14,66 @@ Item {
     property var fileModel: fsModel
 
     property var fileProps: ({})
-    property var textPreview: ({ content: "", truncated: false, isBinary: false, error: "" })
-    property var directoryPreview: ({ entries: [], truncated: false, error: "", count: 0 })
-    property var pdfPreview: ({ localPath: "", pageCount: 0, error: "" })
+    readonly property var textPreview: previewLoader.textPreview
+    readonly property var directoryPreview: previewLoader.directoryPreview
+    readonly property var pdfPreview: previewLoader.pdfPreview
+    readonly property var fileMetadata: previewLoader.fileMetadata
+    // Fonts stay local: QFontDatabase is GUI-thread-only.
     property var fontPreview: ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
-    property var fileMetadata: ({})
     property string metadataHint: ""
     property int pdfPageIndex: 0
+
+    // The page we are navigating away from, held on screen until the
+    // incoming one is Ready. An Image drops its texture the moment source
+    // changes, so without this every page turn flashes empty -- even on a
+    // cache hit, which still resolves a frame or two later because the
+    // provider is asynchronous.
+    property string pdfHoldSource: ""
     property real pdfWheelAccumulator: 0
     property bool closing: false
+    readonly property bool previewLoading: previewLoader.loading
 
     signal closed()
     signal openRequested(string path, bool isDirectory)
+    signal unlockArchiveRequested(string filePath, bool retry)
+    signal unlockSucceeded()
+
+    // Set while a password the user just typed is being proved by a reload.
+    property bool _unlockPending: false
+
+    // The archive this preview unlocked, if any. The password lives only as
+    // long as the preview showing it, so moving to another file or closing
+    // the overlay forgets it, the way Ark and File Roller do.
+    property string _unlockedPath: ""
+
+    function _forgetUnlockedArchive() {
+        if (root._unlockedPath === "")
+            return
+        fileOps.clearArchivePassword(root._unlockedPath)
+        root._unlockedPath = ""
+    }
+
+    function reloadAfterUnlock() {
+        root._unlockPending = true
+        root.refreshPreviewData()
+    }
+
+    // The preview is the only thing that can tell us a password was wrong on
+    // this path: nothing extracts, so no operation reports back. If the reload
+    // still comes back locked, ask again and say so.
+    onDirectoryPreviewChanged: {
+        if (!root._unlockPending)
+            return
+        if (directoryPreview.requiresPassword === true) {
+            root._unlockPending = false
+            fileOps.clearArchivePassword(root.filePath)
+            root.unlockArchiveRequested(root.filePath, true)
+        } else if ((directoryPreview.entries || []).length > 0) {
+            root._unlockPending = false
+            root._unlockedPath = root.filePath
+            root.unlockSucceeded()
+        }
+    }
 
     readonly property string fileName: {
         if (fileProps.name)
@@ -87,6 +135,28 @@ Item {
                        "patch", "cmake", "qml", "mk", "desktop"]
         return textExt.indexOf(fileExtension) >= 0
     }
+    // Which loader the worker thread should run. Mirrors the is* properties
+    // below; "" means metadata only (images, video, audio, fonts).
+    readonly property string previewKind: {
+        if (isRemoteUri) return ""
+        if (isDirectory) return "directory"
+        if (isArchive) return "archive"
+        if (isPdf) return "pdf"
+        if (isText) return "text"
+        return ""
+    }
+
+    PreviewLoader {
+        id: previewLoader
+        requester: "quick"
+        path: root.isRemoteUri ? "" : root.filePath
+        kind: root.previewKind
+        onPdfPageCountChanged: {
+            if (root.pdfPageIndex >= (pdfPreview.pageCount || 0))
+                root.pdfPageIndex = 0
+        }
+    }
+
     readonly property bool pdfPreviewAvailable: previewService.pdfPreviewAvailable
     readonly property bool videoPreviewAvailable: runtimeFeatures.ffmpegAvailable
     readonly property bool textHighlightAvailable: runtimeFeatures.batAvailable
@@ -186,52 +256,30 @@ Item {
     }
 
     function refreshPreviewData() {
-        if (!active || filePath === "")
+        if (!active || filePath === "") {
+            previewLoader.stop()
             return
+        }
 
+        // Cheap in-memory model lookup, so the header (name, size, icon)
+        // repaints immediately while the body is still being read.
         if (fileModel && fileModel.fileProperties)
             fileProps = fileModel.fileProperties(filePath)
         else
             fileProps = ({})
 
-        if (isRemoteUri) {
-            textPreview = ({ content: "", truncated: false, isBinary: false, error: "" })
-            pdfPreview = ({ localPath: "", pageCount: 0, error: "" })
-            fontPreview = ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
-            directoryPreview = ({ entries: [], truncated: false, error: "", count: 0 })
-            fileMetadata = ({})
-            metadataHint = ""
-            return
-        }
+        metadataHint = isRemoteUri
+            ? "" : metadataExtractor.missingDepsHint(fileProps.mimeType || "")
 
-        if (isText)
-            textPreview = previewService.loadTextPreview(filePath)
-        else
-            textPreview = ({ content: "", truncated: false, isBinary: false, error: "" })
+        fontPreview = (isFont && !isRemoteUri)
+            ? previewService.loadFontPreview(filePath)
+            : ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
 
-        if (isPdf) {
-            pdfPreview = previewService.loadPdfPreview(filePath)
-            if (pdfPageIndex >= (pdfPreview.pageCount || 0))
-                pdfPageIndex = 0
-        } else {
-            pdfPreview = ({ localPath: "", pageCount: 0, error: "" })
-        }
-
-        if (isFont)
-            fontPreview = previewService.loadFontPreview(filePath)
-        else
-            fontPreview = ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
-
-        if (isDirectory)
-            directoryPreview = previewService.loadDirectoryPreview(filePath)
-        else if (isArchive)
-            directoryPreview = previewService.loadArchivePreview(filePath)
-        else
-            directoryPreview = ({ entries: [], truncated: false, error: "", count: 0 })
-
-        // Extract rich metadata
-        fileMetadata = metadataExtractor.extract(filePath)
-        metadataHint = metadataExtractor.missingDepsHint(fileProps.mimeType || "")
+        // Assigned, not bound: archivePassword() is a plain invokable with no
+        // NOTIFY, so a binding would never re-evaluate after the user unlocks
+        // the archive. reloadAfterUnlock() routes back through here.
+        previewLoader.password = isArchive ? fileOps.archivePassword(filePath) : ""
+        previewLoader.reload()
     }
 
     onActiveChanged: {
@@ -246,12 +294,20 @@ Item {
             openAnim.start()
             Qt.callLater(function() { root.forceActiveFocus() })
         } else if (visible) {
+            root._forgetUnlockedArchive()
+            // Closing: stop any in-flight worker from doing pointless work
+            // and from repainting a panel the user is no longer looking at.
+            previewLoader.stop()
             openAnim.stop()
             closing = true
             closeAnim.start()
         }
     }
     onFilePathChanged: {
+        // Moving to another file ends the unlocked archive's life.
+        if (root._unlockedPath !== "" && root._unlockedPath !== root.filePath)
+            root._forgetUnlockedArchive()
+        pdfHoldSource = ""
         pdfPageIndex = 0
         pdfWheelAccumulator = 0
         refreshPreviewData()
@@ -264,7 +320,11 @@ Item {
     function changePdfPage(delta) {
         if (!isPdf || pdfPreview.pageCount <= 0)
             return
-        pdfPageIndex = Math.max(0, Math.min(pdfPreview.pageCount - 1, pdfPageIndex + delta))
+        var next = Math.max(0, Math.min(pdfPreview.pageCount - 1, pdfPageIndex + delta))
+        if (next === pdfPageIndex)
+            return
+        pdfHoldSource = pdfImageSource
+        pdfPageIndex = next
     }
 
     function handlePdfWheel(wheel) {
@@ -658,6 +718,20 @@ Item {
                             smooth: true
                         }
 
+                        // Outgoing page, drawn underneath while the next one
+                        // loads. Cleared as soon as pdfPreviewImage is Ready.
+                        Image {
+                            id: pdfHoldImage
+                            anchors.fill: parent
+                            visible: root.pdfHoldSource !== ""
+                                && pdfPreviewImage.status !== Image.Ready
+                            source: root.pdfHoldSource
+                            sourceSize: pdfPreviewImage.sourceSize
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            smooth: true
+                        }
+
                         Image {
                             id: pdfPreviewImage
                             anchors.fill: parent
@@ -667,6 +741,34 @@ Item {
                             fillMode: Image.PreserveAspectFit
                             asynchronous: true
                             smooth: true
+                            onStatusChanged: {
+                                if (status === Image.Ready || status === Image.Error)
+                                    root.pdfHoldSource = ""
+                            }
+                        }
+
+                        // Warm the neighbouring pages into Qt's pixmap cache
+                        // so flipping is a cache hit instead of another
+                        // pdftoppm run. sourceSize must match pdfPreviewImage
+                        // exactly -- it is part of the cache key, and a
+                        // mismatch silently renders everything twice.
+                        Repeater {
+                            model: (root.isPdf && root.pdfPreviewAvailable
+                                    && root.pdfPreview.localPath !== ""
+                                    && root.pdfPreview.error === "") ? [1, -1] : []
+                            Image {
+                                visible: false
+                                asynchronous: true
+                                sourceSize: Qt.size(pdfPreviewImage.width, pdfPreviewImage.height)
+                                source: {
+                                    var page = root.pdfPageIndex + modelData
+                                    if (page < 0 || page >= (root.pdfPreview.pageCount || 0))
+                                        return ""
+                                    return "image://pdfpreview/"
+                                        + encodeURIComponent(root.pdfPreview.localPath)
+                                        + "?page=" + page
+                                }
+                            }
                         }
 
                         MouseArea {
@@ -825,6 +927,32 @@ Item {
                                 color: Theme.error
                                 font.pointSize: Theme.fontNormal
                                 wrapMode: Text.WordWrap
+                            }
+
+                            Rectangle {
+                                Layout.alignment: Qt.AlignHCenter
+                                visible: directoryPreview.requiresPassword === true
+                                implicitWidth: unlockMouse.containsMouse ? 132 : 124
+                                implicitHeight: 32
+                                radius: Theme.radiusMedium
+                                color: unlockMouse.containsMouse
+                                    ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.25)
+                                    : Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.14)
+                                Behavior on implicitWidth { NumberAnimation { duration: 100 } }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "Enter password"
+                                    color: Theme.text
+                                    font.pointSize: Theme.fontSmall
+                                }
+
+                                MouseArea {
+                                    id: unlockMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    onClicked: root.unlockArchiveRequested(root.filePath, false)
+                                }
                             }
 
                             Item {

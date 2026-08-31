@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 DBus Widgets SvgWidgets Svg Network Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 DBus Svg Network Concurrent)
 find_package(KF6WindowSystem QUIET)
 
 add_subdirectory(src)
@@ -21,10 +21,12 @@ install(DIRECTORY themes/ DESTINATION share/hyprfm/themes FILES_MATCHING PATTERN
 install(DIRECTORY src/qml/ DESTINATION share/hyprfm/src/qml)
 
 # Install the generated HyprFM QML module: qmldir + qml/ tree + qmltypes.
-# Without the qml/ subtree on disk, Qt has nothing to fall back on if the
-# embedded qrc bundle is missing a file (we hit exactly that with Qt 6.7.3
-# in v0.4.14, where SettingsPanel.qml made it into the qmldir but not into
-# qrc_hyprfm_raw_qml_0, leaving "SettingsPanel is not a type" at runtime).
+# The qmldir keeps Qt's `prefer :/HyprFM/`, so at runtime the module resolves
+# to the qmlcachegen-compiled qrc payload and nothing is recompiled on launch
+# (a random AppImage mount path defeats the on-disk .qmlc cache every start).
+# The on-disk tree is only the fallback main.cpp uses when the qrc load fails,
+# as it did with Qt 6.7.3 NO_CACHEGEN in v0.4.14 ("SettingsPanel is not a
+# type"); release builds force HYPRFM_ENABLE_QML_CACHEGEN=ON for that reason.
 install(DIRECTORY ${CMAKE_BINARY_DIR}/src/HyprFM/
     DESTINATION share/hyprfm/HyprFM
     FILES_MATCHING
@@ -32,19 +34,6 @@ install(DIRECTORY ${CMAKE_BINARY_DIR}/src/HyprFM/
         PATTERN "qmldir"
         PATTERN "*.qmltypes")
 
-# Qt generates `prefer :/HyprFM/` in the module qmldir. That makes deployed
-# bundles keep resolving HyprFM types from the embedded qrc even when the
-# installed on-disk module has the full file set, which is exactly how a
-# missing qrc SettingsPanel.qml turns into "SettingsPanel is not a type".
-install(CODE [[
-    set(_hyprfm_qmldir "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/share/hyprfm/HyprFM/qmldir")
-    if(EXISTS "${_hyprfm_qmldir}")
-        file(READ "${_hyprfm_qmldir}" _hyprfm_qmldir_contents)
-        string(REPLACE "prefer :/HyprFM/\n" "" _hyprfm_qmldir_contents "${_hyprfm_qmldir_contents}")
-        string(REPLACE "prefer :/HyprFM/\r\n" "" _hyprfm_qmldir_contents "${_hyprfm_qmldir_contents}")
-        file(WRITE "${_hyprfm_qmldir}" "${_hyprfm_qmldir_contents}")
-    endif()
-]])
 
 option(BUILD_TESTS "Build tests" ON)
 if(BUILD_TESTS)

@@ -1,3 +1,4 @@
+#include <QSignalSpy>
 #include <QTest>
 #include <QThread>
 #include <functional>
@@ -18,6 +19,8 @@ class TestPreviewService : public QObject
     Q_OBJECT
 
 private:
+    static constexpr const char *kRequester = "test";
+
     static bool batAvailable()
     {
         return !QStandardPaths::findExecutable("bat").isEmpty()
@@ -283,6 +286,111 @@ private slots:
         removeProc.start("gio", {"remove", "-f", trashUri});
         removeProc.waitForFinished(5000);
         QDir(dirPath).removeRecursively();
+    }
+
+    // ── Async path ──
+
+    void testRequestPreviewDeliversOffThread()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.path() + "/note.txt";
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("hello async\n");
+        f.close();
+
+        PreviewService service;
+        QSignalSpy spy(&service, &PreviewService::previewReady);
+        service.requestPreview(kRequester, path, QStringLiteral("text"));
+
+        // Must not have completed synchronously -- the whole point is that
+        // the GUI thread returns immediately.
+        QCOMPARE(spy.count(), 0);
+        QVERIFY(spy.wait(10000));
+
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.at(0).at(0).toString(), kRequester);
+        QCOMPARE(spy.at(0).at(1).toString(), path);
+        const QVariantMap data = spy.at(0).at(2).toMap();
+        QVERIFY(data.contains("text"));
+        QVERIFY(data.value("text").toMap().value("content").toString().contains("hello async"));
+    }
+
+    void testSupersededRequestIsDropped()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+
+        auto write = [&](const QString &name, const QByteArray &body) {
+            const QString path = dir.path() + "/" + name;
+            QFile f(path);
+            f.open(QIODevice::WriteOnly);
+            f.write(body);
+            f.close();
+            return path;
+        };
+        const QString first = write("first.txt", "FIRST");
+        const QString second = write("second.txt", "SECOND");
+
+        PreviewService service;
+        QSignalSpy spy(&service, &PreviewService::previewReady);
+
+        // Simulates holding an arrow key: the earlier request must never
+        // reach QML, or the panel shows the wrong file's contents.
+        service.requestPreview(kRequester, first, QStringLiteral("text"));
+        service.requestPreview(kRequester, second, QStringLiteral("text"));
+
+        QVERIFY(spy.wait(10000));
+        QTest::qWait(500);   // give any stale worker time to misbehave
+
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.at(0).at(1).toString(), second);
+    }
+
+    void testCancelPreviewSuppressesResult()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.path() + "/cancelled.txt";
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("nobody sees this");
+        f.close();
+
+        PreviewService service;
+        QSignalSpy spy(&service, &PreviewService::previewReady);
+        service.requestPreview(kRequester, path, QStringLiteral("text"));
+        service.cancelPreview(kRequester);
+
+        QTest::qWait(1000);
+        QCOMPARE(spy.count(), 0);
+    }
+
+    void testRequestersDoNotCancelEachOther()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.path() + "/shared.txt";
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("shared");
+        f.close();
+
+        PreviewService service;
+        QSignalSpy spy(&service, &PreviewService::previewReady);
+
+        // The Miller column and the quick-preview overlay share one service.
+        // With a single global generation counter, whichever asked first
+        // would be silently dropped and its panel would stay blank.
+        service.requestPreview(QStringLiteral("miller"), path, QStringLiteral("text"));
+        service.requestPreview(QStringLiteral("quick"), path, QStringLiteral("text"));
+
+        QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 2, 10000);
+
+        QStringList requesters{spy.at(0).at(0).toString(), spy.at(1).at(0).toString()};
+        requesters.sort();
+        QCOMPARE(requesters, (QStringList{"miller", "quick"}));
     }
 };
 

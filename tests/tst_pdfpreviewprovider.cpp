@@ -1,3 +1,4 @@
+#include <QElapsedTimer>
 #include <QTest>
 #include <QPainter>
 #include <QPdfWriter>
@@ -26,6 +27,20 @@ private:
         painter.drawText(QPointF(96.0, 120.0), QStringLiteral("HyprFM PDF Preview"));
         painter.end();
         return filePath;
+    }
+
+    static QImage renderAndWait(PdfPreviewProvider &provider, const QString &id,
+                                const QSize &size)
+    {
+        QQuickImageResponse *response = provider.requestImageResponse(id, size);
+        QSignalSpy spy(response, &QQuickImageResponse::finished);
+        if (spy.isEmpty())
+            spy.wait(15000);
+        QQuickTextureFactory *factory = response->textureFactory();
+        const QImage image = factory ? factory->image() : QImage();
+        delete factory;
+        delete response;
+        return image;
     }
 
 private slots:
@@ -58,6 +73,77 @@ private slots:
 
         delete factory;
         delete response;
+    }
+
+    // QML requests the same page more than once on first paint (an Image's
+    // sourceSize is part of Qt's cache key and changes as the item lays out),
+    // and the adjacent-page prefetch adds more. Those requests are issued
+    // concurrently, so without the render lock every one of them misses the
+    // cache and spawns its own pdftoppm.
+    void testConcurrentRequestsForSamePageAgree()
+    {
+        if (QStandardPaths::findExecutable("pdftoppm").isEmpty()
+            || QStandardPaths::findExecutable("pdfinfo").isEmpty())
+            QSKIP("poppler-utils (pdftoppm/pdfinfo) not installed");
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString pdfPath = createPdf(dir.path());
+        const QString id = QString::fromLatin1(QUrl::toPercentEncoding(pdfPath)) + "?page=0";
+
+        PdfPreviewProvider provider;
+
+        QQuickImageResponse *a = provider.requestImageResponse(id, QSize(400, 500));
+        QQuickImageResponse *b = provider.requestImageResponse(id, QSize(400, 500));
+        QSignalSpy spyA(a, &QQuickImageResponse::finished);
+        QSignalSpy spyB(b, &QQuickImageResponse::finished);
+        if (spyA.isEmpty())
+            QVERIFY(spyA.wait(15000));
+        if (spyB.isEmpty())
+            QVERIFY(spyB.wait(15000));
+
+        QQuickTextureFactory *fa = a->textureFactory();
+        QQuickTextureFactory *fb = b->textureFactory();
+        QVERIFY(fa && fb);
+        const QImage ia = fa->image();
+        const QImage ib = fb->image();
+        QVERIFY(!ia.isNull());
+        QVERIFY(!ib.isNull());
+        QCOMPARE(ia, ib);
+
+        delete fa; delete fb; delete a; delete b;
+    }
+
+    // A page flip must come back from the cache rather than re-running
+    // pdftoppm, which measured ~70 ms per page.
+    void testRepeatRequestIsServedFromCache()
+    {
+        if (QStandardPaths::findExecutable("pdftoppm").isEmpty()
+            || QStandardPaths::findExecutable("pdfinfo").isEmpty())
+            QSKIP("poppler-utils (pdftoppm/pdfinfo) not installed");
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString pdfPath = createPdf(dir.path());
+        const QString id = QString::fromLatin1(QUrl::toPercentEncoding(pdfPath)) + "?page=0";
+
+        PdfPreviewProvider provider;
+
+        QElapsedTimer timer;
+        timer.start();
+        const QImage first = renderAndWait(provider, id, QSize(400, 500));
+        const qint64 coldMs = timer.elapsed();
+        QVERIFY(!first.isNull());
+
+        timer.restart();
+        const QImage second = renderAndWait(provider, id, QSize(400, 500));
+        const qint64 warmMs = timer.elapsed();
+
+        QCOMPARE(second, first);
+        // Deliberately loose: this asserts "no subprocess ran", not a
+        // specific speedup, so it does not flake on a loaded machine.
+        QVERIFY2(warmMs <= coldMs, qPrintable(QStringLiteral("cold %1 ms, warm %2 ms")
+                                                  .arg(coldMs).arg(warmMs)));
     }
 };
 

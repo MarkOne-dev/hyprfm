@@ -13,9 +13,13 @@ Window {
     width: dialogWidth
     height: pageContainer.implicitHeight
     minimumWidth: dialogWidth
-    minimumHeight: height
+    minimumHeight: dialogMinHeight
 
     readonly property int dialogWidth: Math.min(920, (transientParent ? transientParent.width : 920) - 32)
+    // A fixed floor (not the live height): the compositor grows the window by
+    // raising its height, so binding the minimum to it would lock the window
+    // to the new size and it could never be shrunk back down.
+    readonly property int dialogMinHeight: 420
     readonly property int dialogRadius: draftRadiusLarge + 6
 
     function syncHyprlandRounding() {
@@ -664,7 +668,8 @@ Window {
                 Layout.bottomMargin: 4
             }
 
-            Q.Checkbox {
+            Q.Toggle {
+                Layout.fillWidth: true
                 label: "Show hidden files"
                 checked: root.draftShowHidden
                 onToggled: (value) => {
@@ -673,7 +678,8 @@ Window {
                 }
             }
 
-            Q.Checkbox {
+            Q.Toggle {
+                Layout.fillWidth: true
                 label: "Right click address bar to edit path"
                 checked: root.draftRightClickToEditPath
                 onToggled: (value) => {
@@ -879,7 +885,8 @@ Window {
                 }
             }
 
-            Q.Checkbox {
+            Q.Toggle {
+                Layout.fillWidth: true
                 label: "Close button"
                 enabled: root.draftShowWindowControls
                 checked: root._layoutParts.hasClose
@@ -888,7 +895,8 @@ Window {
                 }
             }
 
-            Q.Checkbox {
+            Q.Toggle {
+                Layout.fillWidth: true
                 label: "Minimize button"
                 enabled: root.draftShowWindowControls
                 checked: root._layoutParts.hasMinimize
@@ -897,7 +905,8 @@ Window {
                 }
             }
 
-            Q.Checkbox {
+            Q.Toggle {
+                Layout.fillWidth: true
                 label: "Maximize button"
                 enabled: root.draftShowWindowControls
                 checked: root._layoutParts.hasMaximize

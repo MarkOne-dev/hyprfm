@@ -1,4 +1,5 @@
 #include "services/fileoperations.h"
+#include "services/archivepassword.h"
 #include "services/giotransferworker.h"
 #include "services/xdgtrash.h"
 #include <QBuffer>
@@ -18,6 +19,7 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <QStorageInfo>
+#include <csignal>
 #include <QTemporaryFile>
 #include <QUuid>
 #include <QUrl>
@@ -37,6 +39,64 @@ bool runningInFlatpak()
 {
     static const bool inSandbox = QFile::exists(QStringLiteral("/.flatpak-info"));
     return inSandbox;
+}
+
+// Total size of all regular files under a directory, used to turn raw
+// extraction output into smooth byte-based progress (7z prints no per-file
+// lines, only an in-place percentage that stalls near the end).
+// Whether anything actually landed. A refused extraction can still leave the
+// directory entries the tool created before it gave up.
+bool dirHasFiles(const QString &dir)
+{
+    QDirIterator it(dir, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+    return it.hasNext();
+}
+
+qint64 dirTotalBytes(const QString &dir)
+{
+    qint64 total = 0;
+    QDirIterator it(dir, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
+    while (it.hasNext()) {
+        it.next();
+        const QFileInfo fi = it.fileInfo();
+        if (fi.isSymLink())
+            continue;
+        if (fi.isDir())
+            total += dirTotalBytes(fi.absoluteFilePath());
+        else
+            total += fi.size();
+    }
+    return total;
+}
+
+// Signal a subprocess by its pid (published as an atomic by simple
+// operations) so transfers can be paused, resumed or cancelled from the GUI
+// thread without touching the QProcess object living in the worker thread.
+void suspendProcess(QAtomicInt *pid)
+{
+#ifdef Q_OS_UNIX
+    const int p = pid ? pid->loadRelaxed() : 0;
+    if (p > 0)
+        ::kill(static_cast<pid_t>(p), SIGSTOP);
+#endif
+}
+
+void resumeProcess(QAtomicInt *pid)
+{
+#ifdef Q_OS_UNIX
+    const int p = pid ? pid->loadRelaxed() : 0;
+    if (p > 0)
+        ::kill(static_cast<pid_t>(p), SIGCONT);
+#endif
+}
+
+void killProcess(QAtomicInt *pid)
+{
+#ifdef Q_OS_UNIX
+    const int p = pid ? pid->loadRelaxed() : 0;
+    if (p > 0)
+        ::kill(static_cast<pid_t>(p), SIGKILL);
+#endif
 }
 
 // Locate a .desktop file from its desktop ID ("mpv.desktop"). Under Flatpak
@@ -699,6 +759,7 @@ QString localTrashPathFor(const QString &path)
 }
 
 enum class ArchiveKind {
+    TarZst,
     None,
     Zip,
     Tar,
@@ -717,6 +778,8 @@ ArchiveKind archiveKindForPath(const QString &path)
     const QString lower = path.toLower();
     if (lower.endsWith(QStringLiteral(".tar.gz")) || lower.endsWith(QStringLiteral(".tgz")))
         return ArchiveKind::TarGz;
+    if (lower.endsWith(QLatin1String(".tar.zst")) || lower.endsWith(QLatin1String(".tzst")))
+        return ArchiveKind::TarZst;
     if (lower.endsWith(QStringLiteral(".tar.xz")) || lower.endsWith(QStringLiteral(".txz")))
         return ArchiveKind::TarXz;
     if (lower.endsWith(QStringLiteral(".tar.bz2")) || lower.endsWith(QStringLiteral(".tbz2")))
@@ -738,13 +801,40 @@ ArchiveKind archiveKindForPath(const QString &path)
     return ArchiveKind::None;
 }
 
+// A failure the user can act on: name the binary that is missing rather than
+// reporting "Failed to start compression", which reads like a disk error.
+QString missingToolMessage(const QString &program)
+{
+    return QStringLiteral("Could not run '%1'. Install it and try again "
+                          "(see Settings for the full list of optional tools).")
+        .arg(program);
+}
+
+// Nothing on this system can handle the archive at all.
+QString missingArchiveToolMessage(const QString &archivePath)
+{
+    const QString suffix = QFileInfo(archivePath).completeSuffix();
+    return QStringLiteral("No tool installed that can extract .%1 archives. "
+                          "Install 7z, bsdtar or tar and try again.")
+        .arg(suffix.isEmpty() ? QStringLiteral("archive") : suffix);
+}
+
 bool archiveExtractCommand(const QString &archivePath, const QString &destination,
+                           const QString &password,
                            QString *program, QStringList *args)
 {
+    const QString pass = effectiveArchivePassword(password);
+
     switch (archiveKindForPath(archivePath)) {
     case ArchiveKind::Zip:
         *program = QStringLiteral("unzip");
-        *args = {QStringLiteral("-o"), archivePath, QStringLiteral("-d"), destination};
+        *args = {QStringLiteral("-o"), QStringLiteral("-P"), pass, archivePath,
+                 QStringLiteral("-d"), destination};
+        return true;
+    case ArchiveKind::TarZst:
+        *program = QStringLiteral("tar");
+        *args = {QStringLiteral("--zstd"), QStringLiteral("-xf"), archivePath,
+                 QStringLiteral("-C"), destination};
         return true;
     case ArchiveKind::TarGz:
         *program = QStringLiteral("tar");
@@ -779,10 +869,13 @@ bool archiveExtractCommand(const QString &archivePath, const QString &destinatio
         if (!QStandardPaths::findExecutable(QStringLiteral("7z")).isEmpty()) {
             *program = QStringLiteral("7z");
             *args = {QStringLiteral("x"), QStringLiteral("-aoa"),
+                     QStringLiteral("-p%1").arg(pass),
                      QStringLiteral("-o%1").arg(destination), archivePath};
             return true;
         }
         if (!QStandardPaths::findExecutable(QStringLiteral("bsdtar")).isEmpty()) {
+            // bsdtar cannot decrypt; it stays as a last resort so unencrypted
+            // archives still extract when 7z is not installed.
             *program = QStringLiteral("bsdtar");
             *args = {QStringLiteral("-xf"), archivePath, QStringLiteral("-C"), destination};
             return true;
@@ -795,12 +888,19 @@ bool archiveExtractCommand(const QString &archivePath, const QString &destinatio
     return false;
 }
 
-bool archiveListCommand(const QString &archivePath, QString *program, QStringList *args)
+bool archiveListCommand(const QString &archivePath, const QString &password,
+                        QString *program, QStringList *args)
 {
+    const QString pass = effectiveArchivePassword(password);
+
     switch (archiveKindForPath(archivePath)) {
     case ArchiveKind::Zip:
         *program = QStringLiteral("unzip");
         *args = {QStringLiteral("-Z1"), archivePath};
+        return true;
+    case ArchiveKind::TarZst:
+        *program = QStringLiteral("tar");
+        *args = {QStringLiteral("--zstd"), QStringLiteral("-tf"), archivePath};
         return true;
     case ArchiveKind::TarGz:
         *program = QStringLiteral("tar");
@@ -820,14 +920,17 @@ bool archiveListCommand(const QString &archivePath, QString *program, QStringLis
         return true;
     case ArchiveKind::SevenZip:
     case ArchiveKind::Rar:
+        // bsdtar takes no password, so the pass-aware list always goes
+        // through 7z; only the password-less fallback may use bsdtar.
+        if (!QStandardPaths::findExecutable(QStringLiteral("7z")).isEmpty()) {
+            *program = QStringLiteral("7z");
+            *args = {QStringLiteral("l"), QStringLiteral("-ba"), QStringLiteral("-slt"),
+                     QStringLiteral("-p%1").arg(pass), archivePath};
+            return true;
+        }
         if (!QStandardPaths::findExecutable(QStringLiteral("bsdtar")).isEmpty()) {
             *program = QStringLiteral("bsdtar");
             *args = {QStringLiteral("-tf"), archivePath};
-            return true;
-        }
-        if (!QStandardPaths::findExecutable(QStringLiteral("7z")).isEmpty()) {
-            *program = QStringLiteral("7z");
-            *args = {QStringLiteral("l"), QStringLiteral("-ba"), QStringLiteral("-slt"), archivePath};
             return true;
         }
         return false;
@@ -1585,8 +1688,13 @@ void FileOperations::openFile(const QString &path)
 
     proc->deleteLater();
     const QUrl url = QUrl::fromLocalFile(normalized);
-    if (!QDesktopServices::openUrl(url))
-        qWarning() << "FileOperations::openFile: failed to open" << normalized;
+    if (!QDesktopServices::openUrl(url)) {
+        // Logged only, once: double-clicking a file with no registered handler
+        // did nothing whatsoever from the user's side.
+        emit operationFinished(false,
+            QStringLiteral("Nothing is set up to open %1")
+                .arg(locationFileName(normalized)));
+    }
 }
 
 bool FileOperations::pathExists(const QString &path) const
@@ -1864,12 +1972,48 @@ void FileOperations::openInTerminal(const QString &dirPath)
         return;
     }
 
-    QString terminal = qEnvironmentVariable("TERMINAL", "kitty");
+    // $TERMINAL may carry flags ("kitty -1"); split like a shell would.
+    QStringList args = QProcess::splitCommand(qEnvironmentVariable("TERMINAL", "kitty"));
+    if (args.isEmpty())
+        args << QStringLiteral("kitty");
+    const QString program = args.takeFirst();
+
+    // Inherited cwd is not enough for single-instance terminals: a bare
+    // "ghostty" hands the launch to the running instance, whose new window
+    // opens in that process's cwd (home). Pass the directory explicitly to
+    // every terminal we know the flag for; unknown ones still get the cwd.
+    const QString exe = QFileInfo(program).fileName();
+    if (exe == QLatin1String("ghostty"))
+        args << QStringLiteral("--gtk-single-instance=false")
+             << QStringLiteral("--working-directory=") + dirPath;
+    else if (exe == QLatin1String("kitty") || exe == QLatin1String("wezterm-gui"))
+        args << QStringLiteral("--directory") << dirPath;
+    else if (exe == QLatin1String("wezterm"))
+        args << QStringLiteral("start") << QStringLiteral("--cwd") << dirPath;
+    else if (exe == QLatin1String("konsole"))
+        args << QStringLiteral("--workdir") << dirPath;
+    else if (exe == QLatin1String("xterm") || exe == QLatin1String("urxvt") || exe == QLatin1String("rxvt"))
+        args << QStringLiteral("-cd") << dirPath;
+    else if (exe == QLatin1String("alacritty") || exe == QLatin1String("foot")
+             || exe == QLatin1String("gnome-terminal") || exe == QLatin1String("kgx")
+             || exe == QLatin1String("ptyxis") || exe == QLatin1String("xfce4-terminal")
+             || exe == QLatin1String("tilix") || exe == QLatin1String("terminator")
+             || exe == QLatin1String("mate-terminal") || exe == QLatin1String("lxterminal")
+             || exe == QLatin1String("deepin-terminal") || exe == QLatin1String("qterminal"))
+        args << QStringLiteral("--working-directory") << dirPath;
+
     auto *proc = new QProcess(this);
     proc->setWorkingDirectory(dirPath);
-    proc->start(terminal, {});
     connect(proc, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
             proc, &QProcess::deleteLater);
+    connect(proc, &QProcess::errorOccurred, this, [this, proc, program](QProcess::ProcessError e) {
+        if (e != QProcess::FailedToStart)
+            return;
+        emit operationFinished(false,
+            QStringLiteral("Could not run '%1' — set $TERMINAL to your terminal emulator").arg(program));
+        proc->deleteLater();
+    });
+    proc->start(program, args);
 }
 
 // [[context_menu.actions]] from config.toml. The command uses desktop-entry
@@ -1952,6 +2096,15 @@ int FileOperations::compressFiles(const QStringList &paths, const QString &forma
                 QStringLiteral("--")};
         for (const auto &p : paths)
             args.append(QFileInfo(p).fileName());
+    } else if (format == "tar.zst") {
+        QString outPath = parentDir + "/" + baseName + ".tar.zst";
+        outputPath = outPath;
+        program = QStringLiteral("tar");
+        // No short flag for zstd; tar shells out to the zstd binary.
+        args = {QStringLiteral("--zstd"), QStringLiteral("-cvf"), outPath,
+                QStringLiteral("-C"), parentDir, QStringLiteral("--")};
+        for (const auto &p : paths)
+            args.append(QFileInfo(p).fileName());
     } else if (format == "tar") {
         QString outPath = parentDir + "/" + baseName + ".tar";
         outputPath = outPath;
@@ -1968,12 +2121,17 @@ int FileOperations::compressFiles(const QStringList &paths, const QString &forma
         for (const auto &p : paths)
             args.append(QFileInfo(p).fileName());
     } else {
+        emit operationFinished(false, QStringLiteral("Unsupported archive format: %1").arg(format));
         return -1;
     }
 
     const QString statusText = QString("Compressing %1 item(s)...").arg(paths.size());
+    auto processId = QSharedPointer<QAtomicInt>::create();
+    auto cancelled = QSharedPointer<QAtomicInt>::create();
+    auto pauseRequested = QSharedPointer<QAtomicInt>::create();
     return startSimpleOperation(statusText, {outputPath},
-        [paths, parentDir, program, args](ProgressReporter report) -> QString {
+        [paths, parentDir, program, args, processId, cancelled, pauseRequested]
+        (ProgressReporter report) -> QString {
             // Pre-count files for progress
             int totalFiles = 0;
             for (const auto &p : paths) {
@@ -1991,39 +2149,64 @@ int FileOperations::compressFiles(const QStringList &paths, const QString &forma
             report(0, totalFiles, {});
 
             // Run with verbose output and count lines for progress
-            QProcess proc;
-            proc.setWorkingDirectory(parentDir);
-            proc.setProcessChannelMode(QProcess::MergedChannels);
-            proc.start(program, args);
-            if (!proc.waitForStarted(5000))
-                return QStringLiteral("Failed to start compression");
+            QProcess pr;
+            pr.setWorkingDirectory(parentDir);
+            pr.setProcessChannelMode(QProcess::MergedChannels);
+            pr.start(program, args);
+            if (!pr.waitForStarted(5000))
+                return missingToolMessage(program);
+            processId->storeRelaxed(static_cast<int>(pr.processId()));
+            if (pauseRequested->loadRelaxed())
+                suspendProcess(processId.data());
 
             int processed = 0;
-            while (proc.state() != QProcess::NotRunning || proc.canReadLine()) {
-                if (!proc.canReadLine())
-                    proc.waitForReadyRead(200);
-                while (proc.canReadLine()) {
-                    const QString line = QString::fromUtf8(proc.readLine()).trimmed();
-                    if (line.isEmpty()) continue;
-                    ++processed;
-                    const QString fileName = line.mid(line.lastIndexOf('/') + 1);
+            while (pr.state() != QProcess::NotRunning || pr.bytesAvailable()) {
+                if (cancelled->loadRelaxed())
+                    break;
+                if (!pr.bytesAvailable())
+                    pr.waitForReadyRead(200);
+                const QByteArray chunk = pr.read(65536);
+                if (chunk.isEmpty())
+                    continue;
+                const int newlines = static_cast<int>(chunk.count('\n'));
+                if (newlines > 0) {
+                    processed += newlines;
+                    const QString tail = QString::fromUtf8(chunk);
+                    const QString fileName =
+                        tail.mid(tail.lastIndexOf(QLatin1Char('\n')) + 1).trimmed();
                     report(qMin(processed, totalFiles), totalFiles, fileName);
                 }
             }
 
-            proc.waitForFinished(5000);
-            if (proc.exitCode() != 0)
+            if (cancelled->loadRelaxed() && pr.state() != QProcess::NotRunning)
+                pr.kill();
+            pr.waitForFinished(5000);
+            // Forget the pid the moment the process is gone: cancelTransfer(-1)
+            // walks every transfer, including ones whose subprocess has exited
+            // but whose cleanup has not run, and the OS recycles pids.
+            processId->storeRelaxed(0);
+            if (pr.exitCode() != 0)
                 return QStringLiteral("Compression failed");
             return {};
-        });
+        }, processId, cancelled, pauseRequested);
 }
 
 int FileOperations::extractArchive(const QString &archivePath, const QString &destination)
 {
+    return extractArchive(archivePath, destination, QString());
+}
+
+int FileOperations::extractArchive(const QString &archivePath, const QString &destination,
+                                   const QString &password)
+{
     QString program;
     QStringList args;
-    if (!archiveExtractCommand(archivePath, destination, &program, &args))
+    if (!archiveExtractCommand(archivePath, destination, password, &program, &args)) {
+        // Used to return -1 in silence, and the caller dropped it: pressing
+        // Enter on a .7z with no 7z installed did visibly nothing at all.
+        emit operationFinished(false, missingArchiveToolMessage(archivePath));
         return -1;
+    }
 
     // Add verbose flag for progress tracking
     QStringList verboseArgs = args;
@@ -2031,52 +2214,149 @@ int FileOperations::extractArchive(const QString &archivePath, const QString &de
         verboseArgs.prepend(QStringLiteral("-v"));
     else if (program == "unzip")
         { /* unzip is already verbose by default */ }
-    // 7z, gunzip, unxz, bunzip2 — no easy verbose line-per-file
 
     // Pre-count files in archive for progress
     QString listProg;
     QStringList listArgs;
-    const bool canList = archiveListCommand(archivePath, &listProg, &listArgs);
+    const bool canList = archiveListCommand(archivePath, password, &listProg, &listArgs);
 
+    // 7z prints no per-file lines while extracting, so track its progress by
+    // comparing the archive's total uncompressed size against the bytes that
+    // have landed in the destination folder.
+    const bool byteBased = (program == "7z");
+    static const QRegularExpression sizeLineRegex(QStringLiteral("^Size = (\\d+)$"),
+                                                  QRegularExpression::MultilineOption);
+    auto processId = QSharedPointer<QAtomicInt>::create();
+    auto cancelled = QSharedPointer<QAtomicInt>::create();
+    auto pauseRequested = QSharedPointer<QAtomicInt>::create();
+    // Only a folder we made for this archive is ours to clean up on failure;
+    // "Extract Here" unpacks into a directory that was already there. Kept in
+    // the set rather than consumed: a wrong password retries into the same
+    // destination, and taking the entry on the first attempt would leave every
+    // later refusal behind.
+    const bool destinationIsOurs = m_ownedExtractionDirs.contains(destination);
     return startSimpleOperation(QStringLiteral("Extracting..."), {destination},
-        [program, verboseArgs, canList, listProg, listArgs](ProgressReporter report) -> QString {
-            int totalFiles = 0;
+        [program, verboseArgs, canList, listProg, listArgs, archivePath, destination,
+         processId, cancelled, pauseRequested, byteBased, destinationIsOurs,
+         this](ProgressReporter report) -> QString {
+            QProcess pr;
+            qint64 totalUnits = 0;
             if (canList) {
-                QProcess listProc;
-                listProc.start(listProg, listArgs);
-                if (listProc.waitForFinished(30000) && listProc.exitCode() == 0) {
-                    const QByteArray output = listProc.readAllStandardOutput();
-                    totalFiles = output.count('\n');
+                pr.start(listProg, listArgs);
+                if (pr.waitForFinished(30000) && pr.exitCode() == 0) {
+                    const QString output = QString::fromUtf8(pr.readAllStandardOutput());
+                    if (byteBased) {
+                        QRegularExpressionMatchIterator it =
+                            sizeLineRegex.globalMatch(output);
+                        while (it.hasNext())
+                            totalUnits += it.next().captured(1).toLongLong();
+                    } else {
+                        totalUnits = output.count(QLatin1Char('\n'));
+                    }
                 }
             }
-            if (totalFiles <= 0) totalFiles = 1;
-
-            report(0, totalFiles, {});
-
-            QProcess proc;
-            proc.setProcessChannelMode(QProcess::MergedChannels);
-            proc.start(program, verboseArgs);
-            if (!proc.waitForStarted(5000))
-                return QStringLiteral("Failed to start extraction");
-
-            int processed = 0;
-            while (proc.state() != QProcess::NotRunning || proc.canReadLine()) {
-                if (!proc.canReadLine())
-                    proc.waitForReadyRead(200);
-                while (proc.canReadLine()) {
-                    const QString line = QString::fromUtf8(proc.readLine()).trimmed();
-                    if (line.isEmpty()) continue;
-                    ++processed;
-                    const QString fileName = line.mid(line.lastIndexOf('/') + 1);
-                    report(qMin(processed, totalFiles), totalFiles, fileName);
-                }
-            }
-
-            proc.waitForFinished(5000);
-            if (proc.exitCode() != 0)
+            if (cancelled->loadRelaxed())
                 return QStringLiteral("Extraction failed");
+            if (totalUnits <= 0) totalUnits = 1;
+
+            // Scale byte counters down so the (int, int) reporter never
+            // overflows even for very large archives.
+            const qint64 reportTotal = byteBased
+                ? qMax<qint64>(totalUnits >> 16, 1) : totalUnits;
+            report(0, static_cast<int>(reportTotal), {});
+
+            pr.setProcessChannelMode(QProcess::MergedChannels);
+            pr.start(program, verboseArgs);
+            if (!pr.waitForStarted(5000))
+                return missingToolMessage(program);
+            processId->storeRelaxed(static_cast<int>(pr.processId()));
+            if (pauseRequested->loadRelaxed())
+                suspendProcess(processId.data());
+
+            QList<QByteArray> outputLines;
+            qint64 processed = 0;
+            // "Extract Here" unpacks into a folder that already holds files —
+            // the archive itself among them. Measure the growth from here, not
+            // everything the folder happens to contain, or the bar reports the
+            // whole directory against the archive's size and sails past 100%.
+            const qint64 baselineBytes = byteBased ? dirTotalBytes(destination) : 0;
+            QElapsedTimer sizeScanTimer;
+            sizeScanTimer.start();
+            while (pr.state() != QProcess::NotRunning || pr.bytesAvailable()) {
+                if (cancelled->loadRelaxed())
+                    break;
+                if (!pr.bytesAvailable())
+                    pr.waitForReadyRead(200);
+                QByteArray chunk;
+                if (pr.bytesAvailable()) {
+                    chunk = pr.read(65536);
+                    outputLines.append(chunk);
+                }
+                if (byteBased) {
+                    if (sizeScanTimer.elapsed() >= 250) {
+                        sizeScanTimer.restart();
+                        const qint64 extracted =
+                            qMax<qint64>(dirTotalBytes(destination) - baselineBytes, 0);
+                        processed = qMax(processed, extracted);
+                        report(static_cast<int>(processed >> 16),
+                               static_cast<int>(reportTotal), {});
+                    }
+                } else if (!chunk.isEmpty()) {
+                    const int newlines = static_cast<int>(chunk.count('\n'));
+                    if (newlines > 0) {
+                        processed += newlines;
+                        const QString tail = QString::fromUtf8(chunk);
+                        const QString fileName =
+                            tail.mid(tail.lastIndexOf(QLatin1Char('\n')) + 1).trimmed();
+                        report(qMin(processed, reportTotal), static_cast<int>(reportTotal),
+                               fileName);
+                    }
+                }
+            }
+
+            if (cancelled->loadRelaxed() && pr.state() != QProcess::NotRunning)
+                pr.kill();
+            pr.waitForFinished(5000);
+            // Forget the pid the moment the process is gone: cancelTransfer(-1)
+            // walks every transfer, including ones whose subprocess has exited
+            // but whose cleanup has not run, and the OS recycles pids.
+            processId->storeRelaxed(0);
+            if (pr.exitCode() != 0) {
+                QString output;
+                for (const QByteArray &line : outputLines)
+                    output += QString::fromLatin1(line) + QLatin1Char('\n');
+                // Nothing landed, and the folder only exists because we made
+                // it: leave no empty husk next to the archive.
+                if (destinationIsOurs && !dirHasFiles(destination))
+                    QDir(destination).removeRecursively();
+                if (output.contains(QLatin1String("password"), Qt::CaseInsensitive)
+                    || output.contains(QLatin1String("passphrase"), Qt::CaseInsensitive)) {
+                    // Encrypted archive rejected the password; drop any cached
+                    // value and ask the UI, which retries with what it gets.
+                    const QString archive = archivePath;
+                    const QString dest = destination;
+                    QMetaObject::invokeMethod(this, [this, archive, dest]() {
+                        // Read before clearing: a password that was already
+                        // set and still failed is a wrong one, not a first ask.
+                        const bool retry = !archivePassword(archive).isEmpty();
+                        clearArchivePassword(archive);
+                        emit passwordRequested(archive, dest, retry);
+                    }, Qt::QueuedConnection);
+                    return QStringLiteral("password required");
+                }
+                return QStringLiteral("Extraction failed");
+            }
+            // The archive is done with; the password goes with it. Held only
+            // for as long as it is being used, the way Ark and File Roller
+            // scope it to the archive you currently have open.
+            {
+                const QString archive = archivePath;
+                QMetaObject::invokeMethod(this, [this, archive]() {
+                    clearArchivePassword(archive);
+                }, Qt::QueuedConnection);
+            }
             return {};
-        });
+        }, processId, cancelled, pauseRequested);
 }
 
 // Opening an archive extracts it into a fresh folder next to it. Extracting
@@ -2091,6 +2371,7 @@ QString FileOperations::newExtractionFolder(const QString &archivePath)
     static const QStringList suffixes = {
         QStringLiteral(".tar.gz"), QStringLiteral(".tar.xz"), QStringLiteral(".tar.bz2"),
         QStringLiteral(".tar.zst"), QStringLiteral(".tgz"), QStringLiteral(".txz"),
+        QStringLiteral(".tzst"),
         QStringLiteral(".tbz2"), QStringLiteral(".tar"), QStringLiteral(".zip"),
         QStringLiteral(".7z"), QStringLiteral(".rar"), QStringLiteral(".gz"),
         QStringLiteral(".xz"), QStringLiteral(".bz2"), QStringLiteral(".zst")};
@@ -2110,6 +2391,7 @@ QString FileOperations::newExtractionFolder(const QString &archivePath)
             ? QStringLiteral("Could not create a folder to extract into") : error);
         return {};
     }
+    m_ownedExtractionDirs.insert(dir);
     return dir;
 }
 
@@ -2117,7 +2399,7 @@ QString FileOperations::archiveRootFolder(const QString &archivePath)
 {
     QString program;
     QStringList args;
-    if (!archiveListCommand(archivePath, &program, &args))
+    if (!archiveListCommand(archivePath, QString(), &program, &args))
         return {};
 
     QProcess proc;
@@ -2133,6 +2415,28 @@ QString FileOperations::archiveRootFolder(const QString &archivePath)
     return commonArchiveRootFolder(entries);
 }
 
+QString FileOperations::archivePassword(const QString &archivePath) const
+{
+    return m_archivePasswords.value(archivePath);
+}
+
+void FileOperations::cacheArchivePassword(const QString &archivePath, const QString &password)
+{
+    m_archivePasswords.insert(archivePath, password);
+}
+
+void FileOperations::clearArchivePassword(const QString &archivePath)
+{
+    m_archivePasswords.remove(archivePath);
+}
+
+double FileOperations::progressFraction(int current, int total)
+{
+    if (total <= 0)
+        return -1.0;
+    return qBound(0.0, static_cast<double>(current) / total, 1.0);
+}
+
 bool FileOperations::isArchive(const QString &path)
 {
     return archiveKindForPath(path) != ArchiveKind::None;
@@ -2140,41 +2444,61 @@ bool FileOperations::isArchive(const QString &path)
 
 void FileOperations::pauseTransfer(int transferId)
 {
-    if (transferId < 0) {
-        for (auto &t : m_activeTransfers) {
+    auto pauseOne = [](ActiveTransfer &t) {
+        if (t.worker)
             t.worker->pause();
-            t.paused = true;
-            t.statusText = QStringLiteral("Paused");
-        }
+        else
+            suspendProcess(t.processId.data());
+        if (t.pauseRequested)
+            t.pauseRequested->storeRelaxed(1);
+        t.paused = true;
+        t.statusText = QStringLiteral("Paused");
+    };
+    if (transferId < 0) {
+        for (auto &t : m_activeTransfers)
+            pauseOne(t);
     } else if (auto *t = findTransfer(transferId)) {
-        t->worker->pause();
-        t->paused = true;
-        t->statusText = QStringLiteral("Paused");
+        pauseOne(*t);
     }
     emitAggregatedState();
 }
 
 void FileOperations::resumeTransfer(int transferId)
 {
-    if (transferId < 0) {
-        for (auto &t : m_activeTransfers) {
+    auto resumeOne = [](ActiveTransfer &t) {
+        if (t.worker)
             t.worker->resume();
-            t.paused = false;
-        }
+        else
+            resumeProcess(t.processId.data());
+        if (t.pauseRequested)
+            t.pauseRequested->storeRelaxed(0);
+        t.paused = false;
+    };
+    if (transferId < 0) {
+        for (auto &t : m_activeTransfers)
+            resumeOne(t);
     } else if (auto *t = findTransfer(transferId)) {
-        t->worker->resume();
-        t->paused = false;
+        resumeOne(*t);
     }
     emitAggregatedState();
 }
 
 void FileOperations::cancelTransfer(int transferId)
 {
+    auto cancelOne = [](ActiveTransfer &t) {
+        if (t.worker)
+            t.worker->cancel();
+        else {
+            if (t.cancelled)
+                t.cancelled->storeRelaxed(1);
+            killProcess(t.processId.data());
+        }
+    };
     if (transferId < 0) {
         for (auto &t : m_activeTransfers)
-            t.worker->cancel();
+            cancelOne(t);
     } else if (auto *t = findTransfer(transferId)) {
-        t->worker->cancel();
+        cancelOne(*t);
     }
 }
 
@@ -2196,7 +2520,10 @@ void FileOperations::cleanupTransfer(int transferId)
 }
 
 int FileOperations::startSimpleOperation(const QString &statusText, const QStringList &changedPaths,
-                                           std::function<QString(ProgressReporter)> work)
+                                           std::function<QString(ProgressReporter)> work,
+                                           const QSharedPointer<QAtomicInt> &processId,
+                                           const QSharedPointer<QAtomicInt> &cancelled,
+                                           const QSharedPointer<QAtomicInt> &pauseRequested)
 {
     const int id = m_nextTransferId++;
     ActiveTransfer transfer;
@@ -2204,6 +2531,9 @@ int FileOperations::startSimpleOperation(const QString &statusText, const QStrin
     transfer.statusText = statusText;
     transfer.progress = -1.0;
     transfer.changedPaths = changedPaths;
+    transfer.processId = processId;
+    transfer.cancelled = cancelled;
+    transfer.pauseRequested = pauseRequested;
 
     auto *thread = new QThread;
     transfer.thread = thread;
@@ -2214,7 +2544,7 @@ int FileOperations::startSimpleOperation(const QString &statusText, const QStrin
     auto reportProgress = [this, id](int current, int total, const QString &fileName) {
         QMetaObject::invokeMethod(this, [this, id, current, total, fileName]() {
             if (auto *t = findTransfer(id)) {
-                t->progress = total > 0 ? static_cast<double>(current) / total : -1.0;
+                t->progress = progressFraction(current, total);
                 t->currentFile = fileName;
                 emitAggregatedState();
             }
@@ -2473,11 +2803,19 @@ void FileOperations::setWallpaper(const QString &path)
     const QString resolved = QFileInfo(path).absoluteFilePath();
     auto *proc = new QProcess(this);
     connect(proc, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
-            this, [proc, resolved](int exitCode, QProcess::ExitStatus) {
-                if (exitCode != 0)
-                    qWarning() << "FileOperations::setWallpaper: hyprctl failed for" << resolved;
+            this, [this, proc](int exitCode, QProcess::ExitStatus) {
+                if (exitCode != 0) {
+                    const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                    emit operationFinished(false, err.isEmpty()
+                        ? QStringLiteral("Could not set the wallpaper. Is hyprpaper running?")
+                        : QStringLiteral("Could not set the wallpaper: %1").arg(err));
+                }
                 proc->deleteLater();
             });
+    connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError) {
+        emit operationFinished(false, missingToolMessage(QStringLiteral("hyprctl")));
+        proc->deleteLater();
+    });
     proc->start(QStringLiteral("hyprctl"),
                 {QStringLiteral("hyprpaper"), QStringLiteral("wallpaper"),
                  QStringLiteral(",") + resolved});

@@ -298,28 +298,6 @@ QString friendlyGioActionError(const QString &action, const QString &label,
     return DeviceModel::tr("Could not %1 %2: %3").arg(action, label, err);
 }
 
-QString runGioMountCommand(const QStringList &arguments, QString *error)
-{
-    QProcess proc;
-    proc.start(QStringLiteral("gio"), arguments);
-    if (!proc.waitForFinished(20000)) {
-        if (error)
-            *error = DeviceModel::tr("gio mount timed out");
-        return {};
-    }
-
-    if (proc.exitCode() != 0) {
-        if (error) {
-            *error = QString::fromUtf8(proc.readAllStandardError()).trimmed();
-            if (error->isEmpty())
-                *error = DeviceModel::tr("gio mount failed");
-        }
-        return {};
-    }
-
-    return QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
-}
-
 struct GioOperationContext {
     QPointer<DeviceModel> model;
     QString label;

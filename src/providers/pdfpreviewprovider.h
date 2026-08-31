@@ -18,6 +18,9 @@ public:
     QQuickTextureFactory *textureFactory() const override;
 
 private:
+    // Returns true and fills m_image when this page is already rendered.
+    bool tryCache(const QString &key);
+
     QString m_id;
     QSize m_requestedSize;
     QImage m_image;

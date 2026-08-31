@@ -95,7 +95,9 @@ list(APPEND hyprfm_qml_module_args
         qml/views/KineticWheelScroller.qml
         qml/components/ContextMenu.qml
         qml/components/BulkRenameDialog.qml
+        qml/components/ArchivePasswordDialog.qml
         qml/components/RemoteConnectDialog.qml
+        qml/components/PreviewLoader.qml
         qml/components/QuickPreview.qml
         qml/components/Toast.qml
         qml/components/RubberBand.qml
@@ -180,7 +182,6 @@ target_link_libraries(hyprfm PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::DBus
-    Qt6::Widgets
     Qt6::Svg
     Qt6::Network
     Qt6::Concurrent

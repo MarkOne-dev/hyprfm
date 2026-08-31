@@ -42,6 +42,9 @@ ApplicationWindow {
     property string transferDestinationPath: ""
     property var transferReservedTargets: ({})
     property bool paneFocusScheduled: false
+    // Archive being unlocked right now; {path, dest}. dest is empty when the
+    // password only feeds the preview (QuickPreview refresh).
+    property var passwordDialogContext: null
     readonly property string unifiedTrashPath: "trash:///"
     readonly property bool isTrashView: fileOps.isTrashPath(panePath(activePane))
     readonly property bool isRemoteView: fileOps.isRemotePath(panePath(activePane))
@@ -616,24 +619,17 @@ ApplicationWindow {
         // Wait for this operation's id, not for whichever transfer finishes
         // next; several can run at once.
         var opId = -1
-        var onFinished = null
-        if (clearClipboardOnSuccess) {
-            onFinished = function(success, error, id) {
-                if (id !== opId) return
-                fileOps.operationFinished.disconnect(onFinished)
-                if (success)
-                    clipboard.clear()
-            }
-            fileOps.operationFinished.connect(onFinished)
-        }
-
         if (usesRemotePath)
             opId = moveOperation ? fileOps.moveResolvedItems(items) : fileOps.copyResolvedItems(items)
         else
             opId = moveOperation ? undoManager.moveResolvedItems(items) : undoManager.copyResolvedItems(items)
 
-        if (onFinished && opId < 0)   // failed before it started; nothing will call back
-            fileOps.operationFinished.disconnect(onFinished)
+        if (clearClipboardOnSuccess) {
+            root.whenOperationFinishes(opId, function(success, error) {
+                if (success)
+                    clipboard.clear()
+            })
+        }
     }
 
     function openTransferConflict(index) {
@@ -1269,6 +1265,13 @@ ApplicationWindow {
         onRenameApplied: (paths) => root.handleBulkRenameApplied(paths)
     }
 
+    ArchivePasswordDialog {
+        id: archivePasswordDialog
+        objectName: "archivePasswordDialog"
+        onConfirmed: (password) => root.handleArchivePasswordConfirmed(password)
+        onRejected: root.passwordDialogContext = null
+    }
+
     RemoteConnectDialog {
         id: remoteConnectDialog
         onConnected: (uri) => root.navigateActivePaneTo(uri)
@@ -1315,6 +1318,7 @@ ApplicationWindow {
 
     Item {
         id: renameDialog
+        objectName: "renameDialog"
         anchors.fill: parent
         visible: false
         z: 1000
@@ -1397,7 +1401,7 @@ ApplicationWindow {
                     easing.type: Theme.animEasingExit; easing.bezierCurve: Theme.animBezierCurve
                 }
             }
-            ScriptAction { script: renameDialog.visible = false }
+            ScriptAction { script: { renameDialog.visible = false; root.scheduleActivePaneFocus() } }
         }
 
         MouseArea {
@@ -1489,6 +1493,7 @@ ApplicationWindow {
 
     Item {
         id: newFolderDialog
+        objectName: "newFolderDialog"
         anchors.fill: parent
         visible: false
         z: 1000
@@ -1564,7 +1569,7 @@ ApplicationWindow {
                     easing.type: Theme.animEasingExit; easing.bezierCurve: Theme.animBezierCurve
                 }
             }
-            ScriptAction { script: newFolderDialog.visible = false }
+            ScriptAction { script: { newFolderDialog.visible = false; root.scheduleActivePaneFocus() } }
         }
 
         MouseArea {
@@ -1654,6 +1659,7 @@ ApplicationWindow {
     // ── New File dialog ─────────────────────────────────────────────────────
     Item {
         id: newFileDialog
+        objectName: "newFileDialog"
         anchors.fill: parent
         visible: false
         z: 1000
@@ -1729,7 +1735,7 @@ ApplicationWindow {
                     easing.type: Theme.animEasingExit; easing.bezierCurve: Theme.animBezierCurve
                 }
             }
-            ScriptAction { script: newFileDialog.visible = false }
+            ScriptAction { script: { newFileDialog.visible = false; root.scheduleActivePaneFocus() } }
         }
 
         MouseArea {
@@ -1968,9 +1974,17 @@ ApplicationWindow {
     // ── Properties dialog ──────────────────────────────────────────────────
     Item {
         id: propertiesDialog
+        objectName: "propertiesDialog"
         anchors.fill: parent
         visible: false
         z: 1000
+        focus: visible
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Escape) {
+                propertiesDialog.close()
+                event.accepted = true
+            }
+        }
         Accessible.role: Accessible.Dialog
         Accessible.name: "File properties"
 
@@ -2028,6 +2042,7 @@ ApplicationWindow {
             _metadataHint = (fileOps.isRemotePath(path) || fileOps.isSlowPath(path)) ? "" : metadataExtractor.missingDepsHint(props.mimeType || "")
 
             visible = true
+            propertiesDialog.forceActiveFocus()
             propsBox.opacity = 0
             propsBox.scale = 0.88
             propsBox.yOffset = -8
@@ -2076,7 +2091,7 @@ ApplicationWindow {
                     easing.type: Theme.animEasingExit; easing.bezierCurve: Theme.animBezierCurve
                 }
             }
-            ScriptAction { script: propertiesDialog.visible = false }
+            ScriptAction { script: { propertiesDialog.visible = false; root.scheduleActivePaneFocus() } }
         }
 
         MouseArea {
@@ -3323,6 +3338,21 @@ ApplicationWindow {
         return []
     }
 
+    // Callbacks waiting on one operation's id. A JS
+    // fileOps.operationFinished.connect(function(success, error, id)) never
+    // receives that third argument — only a Connections handler does — so
+    // every such callback compared `undefined` against its id and silently
+    // never ran. Everything waiting on a specific operation goes through here.
+    property var _operationCallbacks: ({})
+
+    function whenOperationFinishes(opId, callback) {
+        if (opId < 0)
+            return
+        var pending = root._operationCallbacks
+        pending[opId] = callback
+        root._operationCallbacks = pending
+    }
+
     function handlePaneFileActivated(pane, filePath, isDirectory) {
         root.setActivePane(pane)
 
@@ -3336,20 +3366,59 @@ ApplicationWindow {
             var dest = fileOps.newExtractionFolder(filePath)
             if (!dest)
                 return
-            var opId = fileOps.extractArchive(filePath, dest)
-            if (opId < 0)
-                return
-            var onExtracted = function(success, error, id) {
-                if (id !== opId) return
-                fileOps.operationFinished.disconnect(onExtracted)
-                if (success)
-                    root.navigatePaneTo(pane, dest)
-            }
-            fileOps.operationFinished.connect(onExtracted)
+            root.trackArchiveExtraction(pane, filePath, dest, fileOps.archivePassword(filePath))
         } else {
             fileOps.openFile(filePath)
             recentFiles.addRecent(filePath)
         }
+    }
+
+    // Runs an extraction and navigates the pane into the destination folder
+    // once it succeeds (used by Enter-on-archive and by password retries).
+    function trackArchiveExtraction(pane, archivePath, dest, password) {
+        var opId = fileOps.extractArchive(archivePath, dest, password)
+        if (opId < 0)
+            return
+        root.whenOperationFinishes(opId, function(success, error) {
+            if (success) {
+                // Whatever password got us here was the right one, so the
+                // prompt (still open while it was being proved) is done.
+                if (archivePasswordDialog.visible) {
+                    root.passwordDialogContext = null
+                    archivePasswordDialog.succeeded()
+                }
+                if (pane)
+                    root.navigatePaneTo(pane, dest)
+                else
+                    root.navigateActivePaneTo(dest)
+            }
+        })
+    }
+
+    // Asking may be a first ask (open the dialog) or the answer to one the
+    // user just gave (report into the dialog already up, without closing it).
+    function askArchivePassword(path, dest, retry) {
+        root.passwordDialogContext = { path: path, dest: dest }
+        if (retry && archivePasswordDialog.visible)
+            archivePasswordDialog.failed()
+        else
+            archivePasswordDialog.openFor(path)
+    }
+
+    function handleArchivePasswordConfirmed(password) {
+        // Kept, not cleared: the dialog stays open until the password is
+        // proved, and a refusal asks again for this same archive.
+        var ctx = root.passwordDialogContext
+        if (!ctx || !ctx.path)
+            return
+        fileOps.cacheArchivePassword(ctx.path, password)
+        if (ctx.dest)
+            root.trackArchiveExtraction(null, ctx.path, ctx.dest, password)
+        // Only when the preview is actually on screen: the dialog also opens
+        // from an extraction, where reloading would run a preview nobody asked
+        // for, on whatever file the closed overlay was last pointed at.
+        if (quickPreview.active)
+            quickPreview.reloadAfterUnlock()
     }
 
     function showContextMenuForPane(pane, filePath, isDirectory, position) {
@@ -3838,6 +3907,13 @@ ApplicationWindow {
                 recentFiles.addRecent(path)
             }
         }
+        onUnlockArchiveRequested: (path, retry) => {
+            root.askArchivePassword(path, "", retry)
+        }
+        onUnlockSucceeded: {
+            root.passwordDialogContext = null
+            archivePasswordDialog.succeeded()
+        }
         onClosed: {
             quickPreview.active = false
             root.scheduleActivePaneFocus()
@@ -3860,14 +3936,28 @@ ApplicationWindow {
                 propertiesDialog.refreshFolderDiskUsage()
         }
 
-        function onOperationFinished(success, error) {
+        function onPasswordRequested(archivePath, destination, retry) {
+            root.askArchivePassword(archivePath, destination, retry)
+        }
+
+        function onOperationFinished(success, error, operationId) {
             fsModel.refresh()
             splitFsModel.refresh()
             root.updateSelectionStatus()
+
+            var waiting = root._operationCallbacks[operationId]
+            if (waiting !== undefined) {
+                var pending = root._operationCallbacks
+                delete pending[operationId]
+                root._operationCallbacks = pending
+                waiting(success, error)
+            }
             if (propertiesDialog.visible && propertiesDialog.props.path) {
                 propertiesDialog.props = propertiesDialog.fileModelRef.fileProperties(propertiesDialog.props.path)
                 propertiesDialog.refreshFolderDiskUsage()
             }
+            if (error === "password required")
+                return  // the password dialog handles it
             if (success)
                 toast.show("Operation completed successfully", "success")
             else

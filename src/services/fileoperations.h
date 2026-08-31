@@ -3,6 +3,9 @@
 #include <QObject>
 #include <QProcess>
 #include <QByteArray>
+#include <QHash>
+#include <QAtomicInteger>
+#include <QSharedPointer>
 #include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
@@ -77,8 +80,20 @@ public:
     Q_INVOKABLE void openNewWindow(const QString &dirPath);
     Q_INVOKABLE int compressFiles(const QStringList &paths, const QString &format);
     Q_INVOKABLE int extractArchive(const QString &archivePath, const QString &destination);
+    Q_INVOKABLE int extractArchive(const QString &archivePath, const QString &destination,
+                                   const QString &password);
+    // In-memory only, never persisted, and held only while the archive is in
+    // use: an extraction clears it when it finishes, and the preview clears it
+    // when it moves off the file. Same scope Ark and File Roller use.
+    Q_INVOKABLE QString archivePassword(const QString &archivePath) const;
+    Q_INVOKABLE void cacheArchivePassword(const QString &archivePath, const QString &password);
+    Q_INVOKABLE void clearArchivePassword(const QString &archivePath);
     Q_INVOKABLE QString newExtractionFolder(const QString &archivePath);
     Q_INVOKABLE static bool isArchive(const QString &path);
+    // A reported (current, total) as a fraction for the UI: always 0..1, or
+    // -1 when there is no total to measure against. Clamped here because a
+    // miscounted total should slow the bar down, never send it past full.
+    static double progressFraction(int current, int total);
     Q_INVOKABLE QString archiveRootFolder(const QString &archivePath);
     Q_INVOKABLE void setWallpaper(const QString &path);
     Q_INVOKABLE void setHyprlandRounding(const QString &windowTitle, int radius);
@@ -94,6 +109,12 @@ signals:
     void currentFileChanged();
     void activeTransfersChanged();
     void pathsChanged(const QStringList &paths);
+    // An encrypted archive rejected the current password; the UI should ask
+    // the user and retry extractArchive() with the password it gets.
+    // `retry` is true when a password had already been supplied and was
+    // wrong, so the dialog can say so instead of reopening unchanged.
+    void passwordRequested(const QString &archivePath, const QString &destination,
+                           bool retry);
     // operationId matches the value returned by the operation that started
     // it (-1 for synchronous failures), so callers waiting on one operation
     // are not satisfied by another one finishing first.
@@ -104,6 +125,12 @@ private:
         int id = 0;
         QThread *thread = nullptr;
         GioTransferWorker *worker = nullptr;
+        // Shared state for simple (external subprocess) operations: atomics
+        // read/written by the GUI and worker threads without touching each
+        // other's QObject instances.
+        QSharedPointer<QAtomicInt> processId;
+        QSharedPointer<QAtomicInt> cancelled;
+        QSharedPointer<QAtomicInt> pauseRequested;
         QString statusText;
         double progress = -1.0;
         QString speed;
@@ -126,8 +153,19 @@ private:
     int startGioTransfer(const QVariantList &operations, bool moveOperation);
     using ProgressReporter = std::function<void(int current, int total, const QString &fileName)>;
     int startSimpleOperation(const QString &statusText, const QStringList &changedPaths,
-                              std::function<QString(ProgressReporter)> work);
+                              std::function<QString(ProgressReporter)> work,
+                              const QSharedPointer<QAtomicInt> &processId = {},
+                              const QSharedPointer<QAtomicInt> &cancelled = {},
+                              const QSharedPointer<QAtomicInt> &pauseRequested = {});
     void cleanupTransfer(int transferId);
+
+    // path -> password, for as long as that archive is in use.
+    QHash<QString, QString> m_archivePasswords;
+
+    // Folders newExtractionFolder() made. Only these are ours to remove when
+    // an extraction fails without unpacking anything: "Extract Here" targets a
+    // directory the user already had.
+    QSet<QString> m_ownedExtractionDirs;
     void emitAggregatedState();
     ActiveTransfer *findTransfer(int id);
 

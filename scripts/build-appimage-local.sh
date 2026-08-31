@@ -192,6 +192,8 @@ do
     fi
 done
 
+"$ROOT_DIR/scripts/prune-appdir.sh" "$APPDIR"
+
 "$LINUXDEPLOY" \
     --appdir "$APPDIR" \
     "${deploy_deps_args[@]}" \

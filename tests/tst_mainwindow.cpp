@@ -210,6 +210,25 @@ private slots:
         }
     }
 
+    // minimumHeight used to be bound to the live window height, so once the
+    // compositor grew the settings window the minimum grew with it and the
+    // window could never be shrunk back down. (The horizontal direction always
+    // worked because minimumWidth is a fixed dialogWidth.) Growing the window
+    // must leave the minimum untouched.
+    void testSettingsWindowCanShrinkBackAfterGrowing()
+    {
+        App app;
+        QVERIFY(app.load());
+        QObject *panel = app.window->findChild<QObject *>(QStringLiteral("settingsPanel"));
+        QVERIFY(panel);
+        QVERIFY(QMetaObject::invokeMethod(panel, "openPanel"));
+
+        const int minHeight = panel->property("minimumHeight").toInt();
+        QVERIFY(minHeight > 0);
+        panel->setProperty("height", minHeight + 200);
+        QTRY_COMPARE(panel->property("minimumHeight").toInt(), minHeight);
+    }
+
     // The Dark Mode switch changes the theme without going through the Theme
     // dropdown, and Quill's Dropdown breaks its own currentIndex binding the
     // first time a row is picked. Together that left the field naming one
@@ -274,6 +293,217 @@ private slots:
         // Short rows keep the compact default width.
         menu->setProperty("customItems", QVariantList{QVariantMap{{"text", "Open"}, {"action", "noop"}}});
         QTRY_COMPARE(menu->property("effectiveMenuWidth").toInt(), base);
+    }
+
+    // The Properties dialog is a plain Item overlay, not a Popup, so nothing
+    // gave it keyboard focus and Escape fell through to the file view behind
+    // it. Opening it and pressing Escape must close it again (issue #28).
+    void testEscapeClosesThePropertiesDialog()
+    {
+        App app;
+        QVERIFY(app.load());
+        QQuickItem *dialog = app.item("propertiesDialog");
+        QVERIFY(dialog);
+
+        QVERIFY(QMetaObject::invokeMethod(dialog, "showProperties",
+                                          Q_ARG(QVariant, app.home.path())));
+        QTRY_VERIFY(dialog->isVisible());
+
+        QTest::keyClick(app.window, Qt::Key_Escape);
+        QTRY_VERIFY2(!dialog->isVisible(), "Escape left the properties dialog open");
+    }
+
+    // Re-opening the menu while it is already visible and laid out must
+    // render it again. popup() used to wait on menuColumn.onHeightChanged,
+    // which cannot fire when the new menu has the same height, leaving the
+    // menu open but invisible: right-clicks seemed dead and hovering lit up
+    // hidden rows.
+    void testRepopupRendersAnOpenMenu()
+    {
+        App app;
+        QVERIFY(app.load());
+        QQuickItem *menu = app.item("contextMenu");
+        QVERIFY(menu);
+        QQuickItem *container = app.item("contextMenuContainer");
+        QVERIFY(container);
+
+        menu->setProperty("customItems", QVariantList{QVariantMap{
+            {"text", "Open"}, {"action", "noop"}}});
+        QVERIFY(QMetaObject::invokeMethod(menu, "popup", Q_ARG(QVariant, 20), Q_ARG(QVariant, 20)));
+        QTRY_VERIFY2(container->property("opacity").toReal() > 0.99,
+                     qPrintable(QStringLiteral("first popup opacity %1")
+                                    .arg(container->property("opacity").toReal())));
+        // Wait for the first open animation to finish; otherwise a re-popup
+        // could become visible on its own through the still-running animation
+        // and mask the regression. Waiting on the final animated values below
+        // is deterministic across environments and theme timings.
+        QTRY_COMPARE(container->property("opacity").toReal(), 1.0);
+        QTRY_COMPARE(container->property("yOffset").toReal(), 0.0);
+
+        // Second popup, same (same-height) menu, menu already visible.
+        QVERIFY(QMetaObject::invokeMethod(menu, "popup", Q_ARG(QVariant, 60), Q_ARG(QVariant, 60)));
+        QTRY_VERIFY2(container->property("opacity").toReal() > 0.99,
+                     qPrintable(QStringLiteral("re-opened menu opacity %1")
+                                    .arg(container->property("opacity").toReal())));
+    }
+
+    // The late-relayout guard in ContextMenu's onHeightChanged only runs once
+    // _pendingPopup is already cleared, so it stayed unexercised: `&&`
+    // short-circuits while a popup is pending. Growing an open menu takes that
+    // branch, and a scripting error there aborts the handler, leaving the menu
+    // laid out for its old height and hanging off the bottom of the window.
+    void testGrowingAnOpenMenuKeepsItOnScreen()
+    {
+        App app;
+        QVERIFY(app.load());
+        QQuickItem *menu = app.item("contextMenu");
+        QVERIFY(menu);
+        QQuickItem *container = app.item("contextMenuContainer");
+        QVERIFY(container);
+
+        menu->setProperty("customItems", QVariantList{QVariantMap{
+            {"text", "Open"}, {"action", "noop"}}});
+        const int nearBottom = app.window->height() - 80;
+        QVERIFY(QMetaObject::invokeMethod(menu, "popup",
+                                          Q_ARG(QVariant, 20), Q_ARG(QVariant, nearBottom)));
+        QTRY_COMPARE(container->property("opacity").toReal(), 1.0);
+
+        // Same menu, many more rows: the height change must reposition it.
+        QVariantList many;
+        for (int i = 0; i < 10; ++i)
+            many << QVariantMap{{"text", QStringLiteral("Item %1").arg(i)}, {"action", "noop"}};
+        const qreal shortHeight = container->height();
+        menu->setProperty("customItems", many);
+        // Wait for the taller layout first: asserting straight away passes on
+        // the short menu, which still fits, and proves nothing.
+        QTRY_VERIFY(container->height() > shortHeight + 100);
+
+        QTRY_VERIFY2(container->y() + container->height() <= app.window->height(),
+                     qPrintable(QStringLiteral("menu bottom at %1 in a %2px window")
+                                    .arg(container->y() + container->height())
+                                    .arg(app.window->height())));
+    }
+
+    // A refused password used to close the prompt and reopen it, which read as
+    // a flicker and threw away what was typed. The dialog now stays up and
+    // reports in place, and only a password that actually worked closes it.
+    void testWrongArchivePasswordKeepsThePromptOpen()
+    {
+        App app;
+        QVERIFY(app.load());
+        QQuickItem *dialog = app.item("archivePasswordDialog");
+        QVERIFY(dialog);
+
+        QVERIFY(QMetaObject::invokeMethod(dialog, "openFor",
+                                          Q_ARG(QVariant, QStringLiteral("/tmp/x.7z"))));
+        QTRY_VERIFY(dialog->isVisible());
+        QVERIFY(dialog->property("errorText").toString().isEmpty());
+
+        QVERIFY(QMetaObject::invokeMethod(dialog, "failed"));
+        // Long enough that a close animation would have finished and hidden it.
+        QTest::qWait(400);
+        QVERIFY2(dialog->isVisible(), "the prompt closed on a wrong password");
+        QCOMPARE(dialog->property("errorText").toString(),
+                 QStringLiteral("Wrong password. Try again."));
+        QCOMPARE(dialog->property("checking").toBool(), false);
+
+        // Only success dismisses it.
+        QVERIFY(QMetaObject::invokeMethod(dialog, "succeeded"));
+        QTRY_VERIFY(!dialog->isVisible());
+    }
+
+    // The whole password flow end to end: activating an encrypted archive
+    // fails, the prompt opens, and the password the user types must extract it
+    // AND dismiss the prompt. The dialog sat on "Checking..." forever when the
+    // success never made it back.
+    void testCorrectPasswordExtractsAndDismissesThePrompt()
+    {
+        if (QStandardPaths::findExecutable(QStringLiteral("7z")).isEmpty())
+            QSKIP("7z not found in PATH");
+
+        App app;
+        QVERIFY(app.load());
+
+        const QString dir = app.home.path();
+        QDir().mkpath(dir + "/payload");
+        QFile f(dir + "/payload/inner.txt");
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("secret");
+        f.close();
+        QProcess zip;
+        zip.setWorkingDirectory(dir);
+        zip.start("7z", {"a", "-ptest", "-mhe=on", dir + "/locked.7z", "payload"});
+        QVERIFY(zip.waitForFinished(20000));
+        QCOMPARE(zip.exitCode(), 0);
+
+        QQuickItem *dialog = app.item("archivePasswordDialog");
+        QVERIFY(dialog);
+
+        QVERIFY(QMetaObject::invokeMethod(app.window->contentItem()->parent(),
+                                          "handlePaneFileActivated",
+                                          Q_ARG(QVariant, QStringLiteral("primary")),
+                                          Q_ARG(QVariant, dir + "/locked.7z"),
+                                          Q_ARG(QVariant, false)));
+
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->isVisible(), 15000);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "openFor", Q_ARG(QVariant, dir + "/locked.7z")));
+        QTRY_VERIFY(dialog->isVisible());
+        dialog->setProperty("filePath", dir + "/locked.7z");
+
+        // Type the right password and submit, as the user would.
+        QQuickItem *field = app.item("archivePasswordField");
+        QVERIFY2(field, "password field not found");
+        field->setProperty("text", QStringLiteral("test"));
+        QVERIFY(QMetaObject::invokeMethod(dialog, "submit"));
+
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isVisible(), 20000);
+        QCOMPARE(dialog->property("checking").toBool(), false);
+    }
+
+    // Closing an overlay has to hand keyboard focus back to the file view, or
+    // arrows and Backspace do nothing until you click something (issue #37).
+    // Only the properties dialog did; rename, new folder and new file did not.
+    void testClosingAnOverlayRestoresPaneFocus_data()
+    {
+        QTest::addColumn<QString>("opener");
+        QTest::addColumn<QString>("dialog");
+        QTest::newRow("rename") << "openRenameDialogForPath" << "renameDialog";
+        QTest::newRow("new folder") << "showNewFolderDialog" << "newFolderDialog";
+        QTest::newRow("new file") << "showNewFileDialog" << "newFileDialog";
+    }
+
+    void testClosingAnOverlayRestoresPaneFocus()
+    {
+        QFETCH(QString, opener);
+        QFETCH(QString, dialog);
+
+        App app;
+        QVERIFY(app.load());
+        QQuickItem *view = app.item(QStringLiteral("primaryFileView"));
+        QVERIFY(view);
+        QObject *root = app.window->contentItem()->parent();
+        QVERIFY(root);
+
+        QVERIFY(QMetaObject::invokeMethod(root, opener.toUtf8().constData(),
+                                          Q_ARG(QVariant, app.home.path() + "/x.txt")));
+        QTRY_VERIFY(app.window->activeFocusItem() != nullptr);
+
+        // Dismiss it the way Escape does.
+        QQuickItem *d = App::findItem(app.window->contentItem(), dialog);
+        QVERIFY2(d, qPrintable(dialog));
+        QVERIFY(QMetaObject::invokeMethod(d, "reject"));
+        QTRY_VERIFY(!d->isVisible());
+
+        QQuickItem *focused = app.window->activeFocusItem();
+        QVERIFY2(focused, "nothing has keyboard focus after closing the overlay");
+        bool insideView = false;
+        for (QQuickItem *i = focused; i; i = i->parentItem())
+            if (i == view)
+                insideView = true;
+        QVERIFY2(insideView, qPrintable(QStringLiteral("focus went to %1, not the file view")
+                                            .arg(focused->objectName().isEmpty()
+                                                 ? QString::fromLatin1(focused->metaObject()->className())
+                                                 : focused->objectName())));
     }
 
     void testWheelOverTabStripScrollsTabsInTheFullWindow()

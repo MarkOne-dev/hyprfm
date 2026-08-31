@@ -213,8 +213,8 @@ FocusScope {
     function updatePreview() {
         if (!visible) {
             millerPreviewModel.setRootPath("")
-            previewColumn.previewFilePath = ""
             previewColumn.previewIsDir = false
+            previewColumn.previewFilePath = ""
             return
         }
 
@@ -222,14 +222,18 @@ FocusScope {
             : (currentColumn.selectedIndices.length > 0 ? currentColumn.selectedIndices[currentColumn.selectedIndices.length - 1] : -1)
         if (idx < 0 || !fileModel) {
             millerPreviewModel.setRootPath("")
-            previewColumn.previewFilePath = ""
             previewColumn.previewIsDir = false
+            previewColumn.previewFilePath = ""
             return
         }
         var fp = currentColumn.pathForRow(idx)
         var isDir = currentColumn.isDirForRow(idx)
-        previewColumn.previewFilePath = fp
+        // previewIsDir first: assigning previewFilePath fires
+        // onPreviewFilePathChanged, which reads previewIsDir to decide what
+        // kind of preview to load. The other order hands it the previous
+        // file's flag.
         previewColumn.previewIsDir = isDir
+        previewColumn.previewFilePath = fp
         if (isDir) {
             millerPreviewModel.setRootPath(fp)
         } else {
@@ -1230,13 +1234,43 @@ FocusScope {
             property string previewFilePath: ""
             property bool previewIsDir: false
 
+            // The page we are navigating away from, held on screen until the
+            // incoming one is Ready. An Image drops its texture the moment
+            // source changes, so without this every page turn flashes empty
+            // -- even on a cache hit, which still resolves a frame or two
+            // later because the provider is asynchronous.
+            property string pdfHoldSource: ""
+
             // Rich preview data (like QuickPreview)
             property var fileProps: ({})
-            property var textPreview: ({ content: "", truncated: false, isBinary: false, error: "" })
-            property var directoryPreview: ({ entries: [], truncated: false, error: "", count: 0 })
-            property var pdfPreview: ({ localPath: "", pageCount: 0, error: "" })
+            readonly property var textPreview: previewLoader.textPreview
+            readonly property var directoryPreview: previewLoader.directoryPreview
+            readonly property var pdfPreview: previewLoader.pdfPreview
+            readonly property var fileMetadata: previewLoader.fileMetadata
+            readonly property bool previewLoading: previewLoader.loading
+            // Fonts stay local: QFontDatabase is GUI-thread-only.
             property var fontPreview: ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
-            property var fileMetadata: ({})
+
+            PreviewLoader {
+                id: previewLoader
+                requester: "miller"
+                path: previewColumn.isRemoteUri ? "" : previewColumn.previewFilePath
+                kind: previewColumn.previewKind
+                onPdfPageCountChanged: {
+                    if (previewColumn.pdfPageIndex >= (pdfPreview.pageCount || 0))
+                        previewColumn.pdfPageIndex = 0
+                }
+            }
+
+            // Which loader the worker thread should run; "" is metadata only.
+            readonly property string previewKind: {
+                if (isRemoteUri) return ""
+                if (previewIsDir) return "directory"
+                if (isArchive) return "archive"
+                if (isPdf) return "pdf"
+                if (isText) return "text"
+                return ""
+            }
             property string metadataHint: ""
             property int pdfPageIndex: 0
             property real pdfWheelAccumulator: 0
@@ -1337,7 +1371,11 @@ FocusScope {
             function changePdfPage(delta) {
                 if (!isPdf || pdfPreview.pageCount <= 0)
                     return
-                pdfPageIndex = Math.max(0, Math.min(pdfPreview.pageCount - 1, pdfPageIndex + delta))
+                var next = Math.max(0, Math.min(pdfPreview.pageCount - 1, pdfPageIndex + delta))
+                if (next === pdfPageIndex)
+                    return
+                pdfHoldSource = pdfImageSource
+                pdfPageIndex = next
             }
 
             function handlePdfWheel(wheel) {
@@ -1369,11 +1407,9 @@ FocusScope {
             function refreshPreview() {
                 if (previewFilePath === "") {
                     fileProps = ({})
-                    textPreview = ({ content: "", truncated: false, isBinary: false, error: "" })
-                    directoryPreview = ({ entries: [], truncated: false, error: "", count: 0 })
-                    pdfPreview = ({ localPath: "", pageCount: 0, error: "" })
-                    fileMetadata = ({})
                     metadataHint = ""
+                    fontPreview = ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
+                    previewLoader.stop()
                     return
                 }
 
@@ -1382,51 +1418,25 @@ FocusScope {
                 // (RecentFilesModel, SearchProxyModel) don't expose
                 // fileProperties(), and fsModel.fileProperties() already
                 // handles local / trash:// / remote URIs internally.
+                // This is an in-memory lookup, so the info bar updates
+                // immediately while the body is still being read.
                 if (fsModel && fsModel.fileProperties)
                     fileProps = fsModel.fileProperties(previewFilePath)
                 else
                     fileProps = ({})
 
-                if (isRemoteUri) {
-                    textPreview = ({ content: "", truncated: false, isBinary: false, error: "" })
-                    directoryPreview = ({ entries: [], truncated: false, error: "", count: 0 })
-                    pdfPreview = ({ localPath: "", pageCount: 0, error: "" })
-                    fontPreview = ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
-                    fileMetadata = ({})
-                    metadataHint = ""
-                    return
-                }
+                metadataHint = isRemoteUri
+                    ? "" : metadataExtractor.missingDepsHint(fileProps.mimeType || "")
 
-                if (isText)
-                    textPreview = previewService.loadTextPreview(previewFilePath)
-                else
-                    textPreview = ({ content: "", truncated: false, isBinary: false, error: "" })
+                fontPreview = (isFont && !isRemoteUri)
+                    ? previewService.loadFontPreview(previewFilePath)
+                    : ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
 
-                if (isPdf) {
-                    pdfPreview = previewService.loadPdfPreview(previewFilePath)
-                    if (pdfPageIndex >= (pdfPreview.pageCount || 0))
-                        pdfPageIndex = 0
-                } else {
-                    pdfPreview = ({ localPath: "", pageCount: 0, error: "" })
-                }
-
-                if (isFont)
-                    fontPreview = previewService.loadFontPreview(previewFilePath)
-                else
-                    fontPreview = ({ family: "", styleName: "", weight: 400, italic: false, valid: false, error: "" })
-
-                if (previewIsDir)
-                    directoryPreview = previewService.loadDirectoryPreview(previewFilePath)
-                else if (isArchive)
-                    directoryPreview = previewService.loadArchivePreview(previewFilePath)
-                else
-                    directoryPreview = ({ entries: [], truncated: false, error: "", count: 0 })
-
-                fileMetadata = metadataExtractor.extract(previewFilePath)
-                metadataHint = metadataExtractor.missingDepsHint(fileProps.mimeType || "")
+                previewLoader.reload()
             }
 
             onPreviewFilePathChanged: {
+                pdfHoldSource = ""
                 pdfPageIndex = 0
                 pdfWheelAccumulator = 0
                 refreshPreview()
@@ -1561,6 +1571,21 @@ FocusScope {
                         smooth: true
                     }
 
+                    // Outgoing page, drawn underneath while the next one
+                    // loads. Cleared as soon as pdfPreviewImage is Ready.
+                    Image {
+                        id: pdfHoldImage
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        visible: previewColumn.pdfHoldSource !== ""
+                            && pdfPreviewImage.status !== Image.Ready
+                        source: previewColumn.pdfHoldSource
+                        sourceSize: pdfPreviewImage.sourceSize
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                        smooth: true
+                    }
+
                     // PDF preview
                     Image {
                         id: pdfPreviewImage
@@ -1575,6 +1600,32 @@ FocusScope {
                         fillMode: Image.PreserveAspectFit
                         asynchronous: true
                         smooth: true
+                        onStatusChanged: {
+                            if (status === Image.Ready || status === Image.Error)
+                                previewColumn.pdfHoldSource = ""
+                        }
+                    }
+
+                    // Warm the neighbouring pages into Qt's pixmap cache so
+                    // flipping is a cache hit instead of another pdftoppm run.
+                    // sourceSize must match pdfPreviewImage exactly -- it is
+                    // part of the cache key, and a mismatch silently renders
+                    // every page twice instead of caching anything.
+                    Repeater {
+                        model: pdfPreviewImage.visible ? [1, -1] : []
+                        Image {
+                            visible: false
+                            asynchronous: true
+                            sourceSize: pdfPreviewImage.sourceSize
+                            source: {
+                                var page = previewColumn.pdfPageIndex + modelData
+                                if (page < 0 || page >= (previewColumn.pdfPreview.pageCount || 0))
+                                    return ""
+                                return "image://pdfpreview/"
+                                    + encodeURIComponent(previewColumn.pdfPreview.localPath)
+                                    + "?page=" + page
+                            }
+                        }
                     }
 
                     MouseArea {
