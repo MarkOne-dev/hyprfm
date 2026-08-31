@@ -33,6 +33,7 @@ ApplicationWindow {
         ? secondaryPaneIsRecents
         : primaryPaneIsRecents
     property var deleteConfirmPaths: []
+    property var pendingCloudCallbacks: []
     property var transferConflictItems: []
     property var transferResolvedItems: []
     property int transferConflictIndex: -1
@@ -546,17 +547,34 @@ ApplicationWindow {
         root.setActivePane(activePane === "primary" ? "secondary" : "primary")
     }
 
+    function ensureMountedAndRun(path, callback) {
+        if (rcloneService.isRclonePath(path)) {
+            var remote = rcloneService.getRemoteNameFromPath(path)
+            if (!rcloneService.isMounted(remote)) {
+                pendingCloudCallbacks.push({ remote: remote, callback: callback })
+                if (!rcloneService.isMounting(remote)) {
+                    toast.show("Mounting cloud storage '" + remote + "'...", "info")
+                    rcloneService.mountRemote(remote)
+                }
+                return
+            }
+        }
+        callback()
+    }
+
     function navigatePaneTo(pane, path) {
         if (!tabModel.activeTab || !path)
             return
 
-        root.setPaneRecents(pane, false)
-        root.clearPaneSearch(pane)
-        if (pane === "secondary" && splitViewEnabled())
-            tabModel.activeTab.navigateSecondaryTo(path)
-        else
-            tabModel.activeTab.navigateTo(path)
-        root.scheduleActivePaneFocus()
+        ensureMountedAndRun(path, function() {
+            root.setPaneRecents(pane, false)
+            root.clearPaneSearch(pane)
+            if (pane === "secondary" && splitViewEnabled())
+                tabModel.activeTab.navigateSecondaryTo(path)
+            else
+                tabModel.activeTab.navigateTo(path)
+            root.scheduleActivePaneFocus()
+        })
     }
 
     function navigateActivePaneTo(path) {
@@ -567,11 +585,13 @@ ApplicationWindow {
         if (!path)
             return
 
-        root.setPaneRecents(root.activePane, false)
-        tabModel.addTab()
-        if (tabModel.activeTab)
-            tabModel.activeTab.navigateTo(path)
-        root.scheduleActivePaneFocus()
+        ensureMountedAndRun(path, function() {
+            root.setPaneRecents(root.activePane, false)
+            tabModel.addTab()
+            if (tabModel.activeTab)
+                tabModel.activeTab.navigateTo(path)
+            root.scheduleActivePaneFocus()
+        })
     }
 
     function resetTransferConflictState() {
@@ -2011,7 +2031,7 @@ ApplicationWindow {
                 apps = []
 
             // Extract rich metadata
-            var md = fileOps.isRemotePath(path) ? ({}) : metadataExtractor.extract(path)
+            var md = (fileOps.isRemotePath(path) || fileOps.isSlowPath(path)) ? ({}) : metadataExtractor.extract(path)
             var keys = Object.keys(md)
             var result = []
             for (var i = 0; i < keys.length; ++i) {
@@ -2019,7 +2039,7 @@ ApplicationWindow {
                     result.push({ label: keys[i], value: String(md[keys[i]]) })
             }
             _metadataKeys = result
-            _metadataHint = fileOps.isRemotePath(path) ? "" : metadataExtractor.missingDepsHint(props.mimeType || "")
+            _metadataHint = (fileOps.isRemotePath(path) || fileOps.isSlowPath(path)) ? "" : metadataExtractor.missingDepsHint(props.mimeType || "")
 
             visible = true
             propertiesDialog.forceActiveFocus()
@@ -3848,6 +3868,7 @@ ApplicationWindow {
                     selectedSizePending: root.currentSelectedSizePending
                     diskFree: root.activeDiskFree()
                     diskTotal: root.activeDiskTotal()
+                    isLoading: (activePane === "secondary" ? splitFsModel : fsModel).isLoading
                 }
             }
         }
@@ -3962,6 +3983,27 @@ ApplicationWindow {
         target: splitFsModel
         function onWatchedDirectoryChanged(path) {
             diskUsageService.invalidatePath(path)
+        }
+    }
+
+    Connections {
+        target: rcloneService
+        function onMountFinished(remoteName, success, error) {
+            var remaining = []
+            for (var i = 0; i < pendingCloudCallbacks.length; ++i) {
+                var item = pendingCloudCallbacks[i]
+                if (item.remote === remoteName) {
+                    if (success) {
+                        toast.show("Cloud storage mounted successfully", "success")
+                        item.callback()
+                    } else {
+                        toast.show("Failed to mount cloud: " + error, "error")
+                    }
+                } else {
+                    remaining.push(item)
+                }
+            }
+            pendingCloudCallbacks = remaining
         }
     }
 }

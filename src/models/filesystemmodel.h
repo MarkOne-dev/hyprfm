@@ -27,6 +27,7 @@ class FileSystemModel : public QAbstractListModel
     // listing and the disk figures are refreshed by the same events.
     Q_PROPERTY(qint64 diskFree READ diskFree NOTIFY countsChanged)
     Q_PROPERTY(qint64 diskTotal READ diskTotal NOTIFY countsChanged)
+    Q_PROPERTY(bool isLoading READ isLoading NOTIFY isLoadingChanged)
 
 public:
     enum Roles {
@@ -71,6 +72,7 @@ public:
     bool showHidden() const;
     int fileCount() const;
     int folderCount() const;
+    bool isLoading() const;
 
     Q_INVOKABLE void setRootPath(const QString &path);
     Q_INVOKABLE void setShowHidden(bool show);
@@ -105,6 +107,7 @@ signals:
     void rootPathChanged();
     void showHiddenChanged();
     void countsChanged();
+    void isLoadingChanged();
     void watchedDirectoryChanged(const QString &path);
 
 private:
@@ -164,6 +167,7 @@ private:
     QVariantMap remoteFileProperties(const QString &path) const;
     QVariantMap trashFileProperties(const QString &path) const;
     const QVariantMap *findTrashEntry(const QString &path) const;
+    void setIsLoading(bool loading);
 
     // QStorageInfo for rootPath, or an invalid one where reporting a disk
     // would mislead.
@@ -188,4 +192,5 @@ private:
     QDir::SortFlags m_sortFlags = QDir::Name | QDir::DirsFirst | QDir::IgnoreCase;
     QString m_sortColumn = "name";
     bool m_sortAscending = true;
+    bool m_isLoading = false;
 };

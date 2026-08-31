@@ -32,6 +32,7 @@
 #include "services/metadataextractor.h"
 #include "services/previewservice.h"
 #include "services/remoteaccessservice.h"
+#include "services/rcloneservice.h"
 #include "services/runtimefeaturesservice.h"
 #include "services/searchservice.h"
 #include "services/sessionstate.h"
@@ -97,6 +98,7 @@ class TestMainWindow : public QObject
             auto *metadataExtractor = new MetadataExtractor(&owner);
             auto *diskUsageService = new DiskUsageService(&owner);
             auto *remoteAccessService = new RemoteAccessService(&owner);
+            auto *rcloneService = new RcloneService(&owner);
             auto *runtimeFeatures = new RuntimeFeaturesService(&owner);
             auto *recentFiles = new RecentFilesModel(configDir + "/recents.json", &owner);
             auto *devices = new DeviceModel(&owner, true);
@@ -135,6 +137,7 @@ class TestMainWindow : public QObject
             ctx->setContextProperty("metadataExtractor", metadataExtractor);
             ctx->setContextProperty("diskUsageService", diskUsageService);
             ctx->setContextProperty("remoteAccessService", remoteAccessService);
+            ctx->setContextProperty("rcloneService", rcloneService);
             ctx->setContextProperty("runtimeFeatures", runtimeFeatures);
             ctx->setContextProperty("dependencies", dependencies);
             ctx->setContextProperty("sessionState", sessionState);

@@ -30,6 +30,27 @@ Rectangle {
     // recents). Real numbers, not int: a disk is bigger than 2 GiB.
     property real diskFree: -1
     property real diskTotal: -1
+    property bool isLoading: false
+
+    // A local directory lists in a few milliseconds, so showing the spinner the
+    // moment a load starts only flashes the item count off and straight back on
+    // every navigation. Wait until a load is slow enough to be worth reporting.
+    property bool showLoading: false
+
+    Timer {
+        id: loadingDelay
+        interval: 300
+        onTriggered: statusBar.showLoading = true
+    }
+
+    onIsLoadingChanged: {
+        if (statusBar.isLoading) {
+            loadingDelay.restart()
+        } else {
+            loadingDelay.stop()
+            statusBar.showLoading = false
+        }
+    }
 
     height: 28
     color: Theme.mantle
@@ -74,8 +95,47 @@ Rectangle {
         anchors.leftMargin: Theme.spacing
         anchors.rightMargin: Theme.spacing
 
+        RowLayout {
+            Layout.fillWidth: true
+            visible: statusBar.showLoading
+            spacing: 6
+
+            Rectangle {
+                width: 12
+                height: 12
+                radius: 6
+                color: "transparent"
+                border.color: Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.15)
+                border.width: 2
+
+                Rectangle {
+                    width: 4
+                    height: 4
+                    x: 4; y: 0
+                    radius: 2
+                    color: Theme.accent
+                }
+
+                RotationAnimator on rotation {
+                    from: 0
+                    to: 360
+                    duration: 1000
+                    loops: Animation.Infinite
+                    running: statusBar.showLoading
+                }
+            }
+
+            Text {
+                text: "Loading directory..."
+                color: Theme.accent
+                font.pointSize: Theme.fontSmall
+                verticalAlignment: Text.AlignVCenter
+            }
+        }
+
         Text {
             Layout.fillWidth: true
+            visible: !statusBar.showLoading
             text: {
                 const files = statusBar.itemCount - statusBar.folderCount
                 return statusBar.itemCount + " items (" + statusBar.folderCount + " folders, " + files + " files)"

@@ -78,6 +78,13 @@ target_include_directories(tst_previewservice PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(tst_previewservice PRIVATE Qt6::Test Qt6::Core Qt6::Gui)
 add_test(NAME tst_previewservice COMMAND tst_previewservice)
 
+add_executable(tst_rcloneservice tst_rcloneservice.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/rcloneservice.cpp
+)
+target_include_directories(tst_rcloneservice PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(tst_rcloneservice PRIVATE Qt6::Test Qt6::Core)
+add_test(NAME tst_rcloneservice COMMAND tst_rcloneservice)
+
 add_executable(tst_remoteaccessservice tst_remoteaccessservice.cpp
     ${CMAKE_SOURCE_DIR}/src/services/remoteaccessservice.cpp
 )
@@ -207,6 +214,7 @@ add_executable(tst_mainwindow tst_mainwindow.cpp
     ${CMAKE_SOURCE_DIR}/src/services/previewservice.cpp
     ${CMAKE_SOURCE_DIR}/src/services/diskusageservice.cpp
     ${CMAKE_SOURCE_DIR}/src/services/remoteaccessservice.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/rcloneservice.cpp
     ${CMAKE_SOURCE_DIR}/src/services/runtimefeaturesservice.cpp
     ${CMAKE_SOURCE_DIR}/src/services/dependencychecker.cpp
     ${CMAKE_SOURCE_DIR}/src/services/gitstatusservice.cpp

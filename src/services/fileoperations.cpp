@@ -1,5 +1,6 @@
 #include "services/fileoperations.h"
 #include "services/archivepassword.h"
+#include "services/cloudmounts.h"
 #include "services/giotransferworker.h"
 #include "services/xdgtrash.h"
 #include <QBuffer>
@@ -1705,6 +1706,11 @@ bool FileOperations::pathExists(const QString &path) const
 bool FileOperations::isRemotePath(const QString &path) const
 {
     return isRemoteUriPath(normalizeLocation(path));
+}
+
+bool FileOperations::isSlowPath(const QString &path) const
+{
+    return isCloudMountPath(normalizeLocation(path));
 }
 
 QString FileOperations::parentPath(const QString &path) const

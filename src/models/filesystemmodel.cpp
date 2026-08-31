@@ -1,4 +1,5 @@
 #include "models/filesystemmodel.h"
+#include "services/cloudmounts.h"
 #include "services/gitstatusservice.h"
 #include "services/xdgtrash.h"
 #include <QLocale>
@@ -286,6 +287,20 @@ QString iconNameForMimeName(const QString &mimeName)
     return icon.isEmpty() ? QStringLiteral("text-x-generic") : icon;
 }
 
+QMimeType mimeTypeForFile(const QString &path)
+{
+    // Content sniffing on a FUSE mount means a network round trip per entry.
+    if (isCloudMountPath(path)) {
+        return mimeDb().mimeTypeForFile(path, QMimeDatabase::MatchExtension);
+    }
+    return mimeDb().mimeTypeForFile(path, QMimeDatabase::MatchDefault);
+}
+
+QMimeType mimeTypeForFile(const QFileInfo &info)
+{
+    return mimeTypeForFile(info.absoluteFilePath());
+}
+
 // Resolve an icon for a file from its name (and optional precomputed
 // content type, e.g. from `gio list -a standard::content-type` for trash
 // entries). When no content type is given, ask QMimeDatabase based on the
@@ -304,7 +319,7 @@ QString iconNameForEntry(const QString &name, bool isDir, const QString &content
     // path is a real local file, MatchDefault will additionally sniff the
     // content when the glob is ambiguous, which is what disambiguates
     // .ts files between TypeScript and MPEG-TS video.
-    const QMimeType mime = mimeDb().mimeTypeForFile(name);
+    const QMimeType mime = mimeTypeForFile(name);
     return iconNameForMimeName(mime.name());
 }
 
@@ -320,7 +335,7 @@ QString fileTypeForEntry(const QString &name, bool isDir, const QString &content
         return contentType;
     }
 
-    const QMimeType mime = mimeDb().mimeTypeForFile(name);
+    const QMimeType mime = mimeTypeForFile(name);
     return mime.isValid() ? mime.comment() : QFileInfo(name).suffix();
 }
 
@@ -338,7 +353,7 @@ PreviewKind previewKindForEntry(const QString &localPath, bool isDir,
 
     QString mimeName = contentType;
     if (mimeName.isEmpty()) {
-        const QMimeType mime = mimeDb().mimeTypeForFile(localPath);
+        const QMimeType mime = mimeTypeForFile(localPath);
         if (mime.isValid())
             mimeName = mime.name();
     }
@@ -501,7 +516,7 @@ QVariantMap buildTrashEntryFromLocal(const XdgTrash::Entry &source)
 
     const QString contentType = isDir
         ? QStringLiteral("inode/directory")
-        : mimeDb().mimeTypeForFile(info).name();
+        : mimeTypeForFile(info).name();
     const QString mimeDescription = contentType.isEmpty()
         ? QString()
         : mimeDb().mimeTypeForName(contentType).comment();
@@ -751,7 +766,7 @@ QVariant FileSystemModel::data(const QModelIndex &index, int role) const
         return info.isDir() ? QString() : info.suffix();
     case MimeTypeRole:
         if (entry.mimeType.isEmpty())
-            entry.mimeType = mimeDb().mimeTypeForFile(info).name();
+            entry.mimeType = mimeTypeForFile(info).name();
         return entry.mimeType;
     case SymlinkTargetRole:
         return info.isSymLink() ? info.symLinkTarget() : QString();
@@ -821,6 +836,16 @@ QString FileSystemModel::rootPath() const { return m_rootPath; }
 bool FileSystemModel::showHidden() const { return m_showHidden; }
 int FileSystemModel::fileCount() const { return m_fileCount; }
 int FileSystemModel::folderCount() const { return m_folderCount; }
+
+bool FileSystemModel::isLoading() const { return m_isLoading; }
+
+void FileSystemModel::setIsLoading(bool loading)
+{
+    if (m_isLoading == loading)
+        return;
+    m_isLoading = loading;
+    emit isLoadingChanged();
+}
 
 bool FileSystemModel::isTrashRoot() const
 {
@@ -978,6 +1003,7 @@ QString FileSystemModel::fileName(int row) const
 
 void FileSystemModel::reload()
 {
+    setIsLoading(true);
     cancelRemoteReload();
     ++m_remoteReloadGeneration;
 
@@ -992,6 +1018,7 @@ void FileSystemModel::reload()
         reloadTrash();
         endResetModel();
         emit countsChanged();
+        setIsLoading(false);
         return;
     }
 
@@ -1079,6 +1106,7 @@ FileSystemModel::LocalReloadResult FileSystemModel::scanLocalEntries(
 
 void FileSystemModel::scheduleLocalReload(bool tryDiff)
 {
+    setIsLoading(true);
     const quint64 gen = ++m_localReloadGeneration;
     m_localReloadTryDiff = tryDiff;
 
@@ -1110,6 +1138,7 @@ void FileSystemModel::cancelLocalReload()
         return;
     m_localReloadWatcher->disconnect(this);
     m_localReloadWatcher->waitForFinished();
+    setIsLoading(false);
 }
 
 void FileSystemModel::applyLocalReload(LocalReloadResult result, bool tryDiff)
@@ -1120,8 +1149,10 @@ void FileSystemModel::applyLocalReload(LocalReloadResult result, bool tryDiff)
     if (result.generation != m_localReloadGeneration)
         return;
 
-    if (tryDiff && applyLocalDiff(result.entries))
+    if (tryDiff && applyLocalDiff(result.entries)) {
+        setIsLoading(false);
         return;
+    }
 
     beginResetModel();
     m_entries = std::move(result.entries);
@@ -1129,6 +1160,7 @@ void FileSystemModel::applyLocalReload(LocalReloadResult result, bool tryDiff)
     updateLocalCounts();
     endResetModel();
     emit countsChanged();
+    setIsLoading(false);
 }
 
 void FileSystemModel::reloadRemote()
@@ -1138,6 +1170,8 @@ void FileSystemModel::reloadRemote()
         m_folderCount = 0;
         return;
     }
+
+    setIsLoading(true);
 
     QStringList args = {
         QStringLiteral("list"),
@@ -1166,8 +1200,10 @@ void FileSystemModel::reloadRemote()
         m_remoteReloadProcess = nullptr;
         process->deleteLater();
 
-        if (output.isEmpty() && exitCode != 0)
+        if (output.isEmpty() && exitCode != 0) {
+            setIsLoading(false);
             return;
+        }
 
         applyRemoteReload(rootPath, output);
     });
@@ -1194,6 +1230,7 @@ void FileSystemModel::cancelRemoteReload()
     }
     m_remoteReloadProcess->deleteLater();
     m_remoteReloadProcess = nullptr;
+    setIsLoading(false);
 }
 
 void FileSystemModel::applyRemoteReload(const QString &rootPath, const QByteArray &output)
@@ -1280,6 +1317,7 @@ void FileSystemModel::applyRemoteReload(const QString &rootPath, const QByteArra
     m_folderCount = folders;
     endResetModel();
     emit countsChanged();
+    setIsLoading(false);
 }
 
 QList<FileSystemModel::Entry> FileSystemModel::currentLocalEntries() const
@@ -1314,14 +1352,29 @@ void FileSystemModel::ensurePopulated(const Entry &entry) const
     const bool isDir = entry.info.isDir();
     const QString absPath = entry.info.absoluteFilePath();
     entry.iconName = iconNameForEntry(absPath, isDir);
-    entry.fileType = fileTypeForEntry(entry.info.fileName(), isDir);
+    entry.fileType = fileTypeForEntry(absPath, isDir);
     entry.sizeText = isDir ? QString() : formattedSize(entry.info.size());
     entry.modifiedText = QLocale().toString(entry.info.lastModified(), QLocale::ShortFormat);
-    entry.permissionsText = permissionsString(entry.info);
-    entry.owner = entry.info.owner();
-    entry.group = entry.info.group();
-    entry.createdText = QLocale().toString(entry.info.birthTime(), QLocale::ShortFormat);
-    entry.accessedText = QLocale().toString(entry.info.lastRead(), QLocale::ShortFormat);
+
+    const bool isRemote = isCloudMountPath(absPath);
+
+    if (isRemote) {
+        // A FUSE mount reports the mounting user for every entry and stats
+        // cost a round trip, so none of this is worth fetching. Leave it
+        // blank the way trash entries do rather than invent plausible values.
+        entry.permissionsText = QString();
+        entry.owner = QString();
+        entry.group = QString();
+        entry.createdText = QString();
+        entry.accessedText = QString();
+    } else {
+        entry.permissionsText = permissionsString(entry.info);
+        entry.owner = entry.info.owner();
+        entry.group = entry.info.group();
+        entry.createdText = QLocale().toString(entry.info.birthTime(), QLocale::ShortFormat);
+        entry.accessedText = QLocale().toString(entry.info.lastRead(), QLocale::ShortFormat);
+    }
+
     const PreviewKind kind = previewKindForEntry(absPath, isDir);
     entry.hasImagePreview = kind == PreviewKind::Image;
     entry.hasVideoPreview = kind == PreviewKind::Video;
@@ -1512,6 +1565,7 @@ QVariantMap FileSystemModel::fileProperties(const QString &path) const
     // Trash rows carry a real path under <trash>/files rather than a trash://
     // URI, so match against the loaded entries too — otherwise a trashed item
     // falls through to the plain-file branch and loses originalPath/deletedAt.
+
     if (isTrashUri(normalizedPath))
         return trashFileProperties(normalizedPath);
     if (isTrashRoot()) {
@@ -1521,6 +1575,8 @@ QVariantMap FileSystemModel::fileProperties(const QString &path) const
 
     if (isRemoteUri(normalizedPath))
         return remoteFileProperties(normalizedPath);
+
+    const bool isRemote = isCloudMountPath(normalizedPath);
 
     QFileInfo info(normalizedPath);
     QVariantMap props;
@@ -1532,25 +1588,34 @@ QVariantMap FileSystemModel::fileProperties(const QString &path) const
     props["isSymlink"] = info.isSymLink();
 
     // Icon name (reuse the same mapping as data())
-    props["iconName"] = iconNameForEntry(info.fileName(), info.isDir());
+    props["iconName"] = iconNameForEntry(info.absoluteFilePath(), info.isDir());
     if (info.isSymLink())
         props["symlinkTarget"] = info.symLinkTarget();
 
     // Size
     if (info.isDir()) {
-        QDir dir(normalizedPath);
-        auto allEntries = dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
-        int fileCount = 0, folderCount = 0;
-        for (const auto &e : allEntries) {
-            if (e.isDir()) ++folderCount;
-            else ++fileCount;
+        if (isRemote) {
+            props["containedItems"] = QVariant();
+            props["containedFiles"] = QVariant();
+            props["containedFolders"] = QVariant();
+            props["contentText"] = QStringLiteral("Folder");
+            props["sizeText"] = QStringLiteral("Folder");
+            props["size"] = QVariant(static_cast<qint64>(-1));
+        } else {
+            QDir dir(normalizedPath);
+            auto allEntries = dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
+            int fileCount = 0, folderCount = 0;
+            for (const auto &e : allEntries) {
+                if (e.isDir()) ++folderCount;
+                else ++fileCount;
+            }
+            props["containedItems"] = allEntries.count();
+            props["containedFiles"] = fileCount;
+            props["containedFolders"] = folderCount;
+            props["contentText"] = QString("%1 items (%2 files, %3 folders)").arg(allEntries.count()).arg(fileCount).arg(folderCount);
+            props["sizeText"] = QString("%1 items").arg(allEntries.count());
+            props["size"] = QVariant(static_cast<qint64>(-1));
         }
-        props["containedItems"] = allEntries.count();
-        props["containedFiles"] = fileCount;
-        props["containedFolders"] = folderCount;
-        props["contentText"] = QString("%1 items (%2 files, %3 folders)").arg(allEntries.count()).arg(fileCount).arg(folderCount);
-        props["sizeText"] = QString("%1 items").arg(allEntries.count());
-        props["size"] = QVariant(static_cast<qint64>(-1));
     } else {
         qint64 size = info.size();
         props["size"] = size;
@@ -1558,68 +1623,85 @@ QVariantMap FileSystemModel::fileProperties(const QString &path) const
     }
 
     // Disk usage
-    QStorageInfo storage(info.absoluteFilePath());
-    if (storage.isValid()) {
-        qint64 total = storage.bytesTotal();
-        qint64 free = storage.bytesAvailable();
-        qint64 used = total - free;
-        double usedPct = total > 0 ? (double)used / total : 0;
-        double freePct = total > 0 ? (double)free / total : 0;
+    if (!isRemote) {
+        QStorageInfo storage(info.absoluteFilePath());
+        if (storage.isValid()) {
+            qint64 total = storage.bytesTotal();
+            qint64 free = storage.bytesAvailable();
+            qint64 used = total - free;
+            double usedPct = total > 0 ? (double)used / total : 0;
+            double freePct = total > 0 ? (double)free / total : 0;
 
-        auto fmtSize = [](qint64 s) -> QString {
-            if (s < 1024) return QString("%1 B").arg(s);
-            if (s < 1024LL * 1024) return QString("%1 KB").arg(s / 1024.0, 0, 'f', 1);
-            if (s < 1024LL * 1024 * 1024) return QString("%1 MB").arg(s / (1024.0 * 1024.0), 0, 'f', 1);
-            return QString("%1 GB").arg(s / (1024.0 * 1024.0 * 1024.0), 0, 'f', 1);
-        };
-        props["diskTotal"] = fmtSize(total);
-        props["diskUsed"] = fmtSize(used);
-        props["diskFree"] = fmtSize(free);
-        props["diskUsedPercent"] = usedPct;
-        props["diskUsedPctText"] = QString("%1%").arg(qRound(usedPct * 100));
-        props["diskFreePctText"] = QString("%1%").arg(qRound(freePct * 100));
+            auto fmtSize = [](qint64 s) -> QString {
+                if (s < 1024) return QString("%1 B").arg(s);
+                if (s < 1024LL * 1024) return QString("%1 KB").arg(s / 1024.0, 0, 'f', 1);
+                if (s < 1024LL * 1024 * 1024) return QString("%1 MB").arg(s / (1024.0 * 1024.0), 0, 'f', 1);
+                return QString("%1 GB").arg(s / (1024.0 * 1024.0 * 1024.0), 0, 'f', 1);
+            };
+            props["diskTotal"] = fmtSize(total);
+            props["diskUsed"] = fmtSize(used);
+            props["diskFree"] = fmtSize(free);
+            props["diskUsedPercent"] = usedPct;
+            props["diskUsedPctText"] = QString("%1%").arg(qRound(usedPct * 100));
+            props["diskFreePctText"] = QString("%1%").arg(qRound(freePct * 100));
+        }
     }
 
     // MIME type
-    auto mime = mimeDb().mimeTypeForFile(info);
+    auto mime = mimeTypeForFile(info);
     props["mimeType"] = mime.name();
     props["mimeDescription"] = mime.comment();
 
-    // Timestamps
-    props["created"] = QLocale().toString(info.birthTime(), QLocale::LongFormat);
-    props["modified"] = QLocale().toString(info.lastModified(), QLocale::LongFormat);
-    props["accessed"] = QLocale().toString(info.lastRead(), QLocale::LongFormat);
+    if (isRemote) {
+        props["created"] = QString();
+        props["modified"] = QLocale().toString(info.lastModified(), QLocale::LongFormat);
+        props["accessed"] = QString();
 
-    // Ownership
-    props["owner"] = info.owner();
-    props["group"] = info.group();
+        props["owner"] = QString();
+        props["group"] = QString();
+        props["permissions"] = QString();
+        props["ownerAccess"] = 0;
+        props["groupAccess"] = 0;
+        props["otherAccess"] = 0;
+        props["isExecutable"] = false;
+        props["canEditPermissions"] = false;
+    } else {
+        // Timestamps
+        props["created"] = QLocale().toString(info.birthTime(), QLocale::LongFormat);
+        props["modified"] = QLocale().toString(info.lastModified(), QLocale::LongFormat);
+        props["accessed"] = QLocale().toString(info.lastRead(), QLocale::LongFormat);
 
-    // Permissions string
-    auto p = info.permissions();
-    QString permStr;
-    permStr += (p & QFile::ReadOwner)  ? 'r' : '-';
-    permStr += (p & QFile::WriteOwner) ? 'w' : '-';
-    permStr += (p & QFile::ExeOwner)   ? 'x' : '-';
-    permStr += (p & QFile::ReadGroup)  ? 'r' : '-';
-    permStr += (p & QFile::WriteGroup) ? 'w' : '-';
-    permStr += (p & QFile::ExeGroup)   ? 'x' : '-';
-    permStr += (p & QFile::ReadOther)  ? 'r' : '-';
-    permStr += (p & QFile::WriteOther) ? 'w' : '-';
-    permStr += (p & QFile::ExeOther)   ? 'x' : '-';
-    props["permissions"] = permStr;
+        // Ownership
+        props["owner"] = info.owner();
+        props["group"] = info.group();
 
-    // Per-role access index: 0=None, 1=Read only, 2=Read & Write, 3=Read & Write & Execute
-    // (for dropdown selectors)
-    auto accessIndex = [](bool r, bool w, bool x) -> int {
-        if (r && w && x) return 3;
-        if (r && w)      return 2;
-        if (r)           return 1;
-        return 0;
-    };
-    props["ownerAccess"] = accessIndex(p & QFile::ReadOwner, p & QFile::WriteOwner, p & QFile::ExeOwner);
-    props["groupAccess"] = accessIndex(p & QFile::ReadGroup, p & QFile::WriteGroup, p & QFile::ExeGroup);
-    props["otherAccess"] = accessIndex(p & QFile::ReadOther, p & QFile::WriteOther, p & QFile::ExeOther);
-    props["isExecutable"] = bool(p & QFile::ExeOwner);
+        // Permissions string
+        auto p = info.permissions();
+        QString permStr;
+        permStr += (p & QFile::ReadOwner)  ? 'r' : '-';
+        permStr += (p & QFile::WriteOwner) ? 'w' : '-';
+        permStr += (p & QFile::ExeOwner)   ? 'x' : '-';
+        permStr += (p & QFile::ReadGroup)  ? 'r' : '-';
+        permStr += (p & QFile::WriteGroup) ? 'w' : '-';
+        permStr += (p & QFile::ExeGroup)   ? 'x' : '-';
+        permStr += (p & QFile::ReadOther)  ? 'r' : '-';
+        permStr += (p & QFile::WriteOther) ? 'w' : '-';
+        permStr += (p & QFile::ExeOther)   ? 'x' : '-';
+        props["permissions"] = permStr;
+
+        // Per-role access index: 0=None, 1=Read only, 2=Read & Write, 3=Read & Write & Execute
+        // (for dropdown selectors)
+        auto accessIndex = [](bool r, bool w, bool x) -> int {
+            if (r && w && x) return 3;
+            if (r && w)      return 2;
+            if (r)           return 1;
+            return 0;
+        };
+        props["ownerAccess"] = accessIndex(p & QFile::ReadOwner, p & QFile::WriteOwner, p & QFile::ExeOwner);
+        props["groupAccess"] = accessIndex(p & QFile::ReadGroup, p & QFile::WriteGroup, p & QFile::ExeGroup);
+        props["otherAccess"] = accessIndex(p & QFile::ReadOther, p & QFile::WriteOther, p & QFile::ExeOther);
+        props["isExecutable"] = bool(p & QFile::ExeOwner);
+    }
 
     return props;
 }

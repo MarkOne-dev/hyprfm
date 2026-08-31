@@ -497,6 +497,15 @@ void DependencyChecker::populate()
         Kind::Feature, false, hasKWin, {},
         buildFeatureHint(QStringLiteral("kwindowsystem"))
     });
+
+    m_deps.append({
+        QStringLiteral("rclone"),
+        QStringLiteral("rclone"),
+        QStringLiteral("Mount cloud storage services (Google Drive, OneDrive, etc.)."),
+        Kind::Tool, false, hasExecutable(QStringLiteral("rclone")),
+        {QStringLiteral("rclone")},
+        buildHints(QStringLiteral("rclone"))
+    });
 }
 
 QVariantList DependencyChecker::dependencies() const

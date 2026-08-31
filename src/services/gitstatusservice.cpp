@@ -1,4 +1,5 @@
 #include "services/gitstatusservice.h"
+#include "services/cloudmounts.h"
 
 #include <QDir>
 #include <QFile>
@@ -333,5 +334,6 @@ bool GitStatusService::isRemotePath(const QString &path) const
     return path.startsWith(QStringLiteral("smb://")) ||
            path.startsWith(QStringLiteral("sftp://")) ||
            path.startsWith(QStringLiteral("ftp://")) ||
-           path.startsWith(QStringLiteral("trash://"));
+           path.startsWith(QStringLiteral("trash://")) ||
+           isCloudMountPath(path);
 }

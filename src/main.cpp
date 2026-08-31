@@ -47,6 +47,7 @@
 #include "services/metadataextractor.h"
 #include "services/diskusageservice.h"
 #include "services/remoteaccessservice.h"
+#include "services/rcloneservice.h"
 #include "services/runtimefeaturesservice.h"
 #include "services/dependencychecker.h"
 #include "services/gitstatusservice.h"
@@ -510,6 +511,7 @@ int main(int argc, char *argv[])
     previewService->setMetadataExtractor(metadataExtractor);
     DiskUsageService *diskUsageService = new DiskUsageService(&app);
     RemoteAccessService *remoteAccessService = new RemoteAccessService(&app);
+    RcloneService *rcloneService = new RcloneService(&app);
     RuntimeFeaturesService *runtimeFeatures = new RuntimeFeaturesService(&app);
     config->setShowWindowControlsDefault(runtimeFeatures->useIntegratedWindowControls());
     GitStatusService *primaryGitService = new GitStatusService(&app);
@@ -603,6 +605,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("metadataExtractor", metadataExtractor);
     engine.rootContext()->setContextProperty("diskUsageService", diskUsageService);
     engine.rootContext()->setContextProperty("remoteAccessService", remoteAccessService);
+    engine.rootContext()->setContextProperty("rcloneService", rcloneService);
     engine.rootContext()->setContextProperty("runtimeFeatures", runtimeFeatures);
     engine.rootContext()->setContextProperty("dependencies", dependencies);
     engine.rootContext()->setContextProperty("sessionState", sessionState);
