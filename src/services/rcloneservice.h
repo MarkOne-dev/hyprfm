@@ -42,4 +42,5 @@ private:
     bool m_rcloneAvailable;
     QString m_mountsBaseDir;
     QHash<QString, QProcess*> m_processes;
+    QHash<QString, bool> m_mountSuccessEmitted;
 };

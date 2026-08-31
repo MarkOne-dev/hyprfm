@@ -10,10 +10,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-namespace {
-    QHash<QString, bool> m_mountSuccessEmitted;
-}
-
 RcloneService::RcloneService(QObject *parent)
     : QObject(parent)
 {
