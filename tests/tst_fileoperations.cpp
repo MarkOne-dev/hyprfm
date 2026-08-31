@@ -1424,6 +1424,36 @@ private slots:
         QCOMPARE(finishSpy.constFirst().at(0).toBool(), true);
     }
 
+    // tar.zst round trip: the format the context menu offers has to be one the
+    // app can also open again (issue #34).
+    void testCompressAndExtractTarZst()
+    {
+        if (QStandardPaths::findExecutable(QStringLiteral("zstd")).isEmpty())
+            QSKIP("zstd not found in PATH");
+
+        TestDir dir;
+        TestDir extractDir;
+        dir.createDir("payload");
+        dir.createFile("payload/inner.txt", "hello zstd");
+
+        FileOperations ops;
+        QSignalSpy finishSpy(&ops, &FileOperations::operationFinished);
+
+        QVERIFY(ops.compressFiles({dir.path() + "/payload"}, QStringLiteral("tar.zst")) >= 0);
+        QTRY_VERIFY_WITH_TIMEOUT(finishSpy.count() > 0, 20000);
+        QCOMPARE(finishSpy.at(0).at(0).toBool(), true);
+
+        const QString archivePath = dir.path() + "/payload.tar.zst";
+        QVERIFY2(QFile::exists(archivePath), qPrintable(archivePath));
+        QVERIFY(FileOperations::isArchive(archivePath));
+
+        finishSpy.clear();
+        QVERIFY(ops.extractArchive(archivePath, extractDir.path()) >= 0);
+        QTRY_VERIFY_WITH_TIMEOUT(finishSpy.count() > 0, 20000);
+        QCOMPARE(finishSpy.at(0).at(0).toBool(), true);
+        QVERIFY(QFile::exists(extractDir.path() + "/payload/inner.txt"));
+    }
+
     void testCompressionDoesNotExecuteFileNames_data()
     {
         QTest::addColumn<QString>("format");
@@ -1432,6 +1462,7 @@ private slots:
 
         QTest::newRow("zip") << "zip" << ".zip" << "zip";
         QTest::newRow("tar") << "tar" << ".tar" << "tar";
+        QTest::newRow("tar.zst") << "tar.zst" << ".tar.zst" << "zstd";
     }
 
     void testCompressionDoesNotExecuteFileNames()

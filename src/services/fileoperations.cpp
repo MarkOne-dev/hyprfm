@@ -759,6 +759,7 @@ QString localTrashPathFor(const QString &path)
 }
 
 enum class ArchiveKind {
+    TarZst,
     None,
     Zip,
     Tar,
@@ -777,6 +778,8 @@ ArchiveKind archiveKindForPath(const QString &path)
     const QString lower = path.toLower();
     if (lower.endsWith(QStringLiteral(".tar.gz")) || lower.endsWith(QStringLiteral(".tgz")))
         return ArchiveKind::TarGz;
+    if (lower.endsWith(QLatin1String(".tar.zst")) || lower.endsWith(QLatin1String(".tzst")))
+        return ArchiveKind::TarZst;
     if (lower.endsWith(QStringLiteral(".tar.xz")) || lower.endsWith(QStringLiteral(".txz")))
         return ArchiveKind::TarXz;
     if (lower.endsWith(QStringLiteral(".tar.bz2")) || lower.endsWith(QStringLiteral(".tbz2")))
@@ -809,6 +812,11 @@ bool archiveExtractCommand(const QString &archivePath, const QString &destinatio
         *program = QStringLiteral("unzip");
         *args = {QStringLiteral("-o"), QStringLiteral("-P"), pass, archivePath,
                  QStringLiteral("-d"), destination};
+        return true;
+    case ArchiveKind::TarZst:
+        *program = QStringLiteral("tar");
+        *args = {QStringLiteral("--zstd"), QStringLiteral("-xf"), archivePath,
+                 QStringLiteral("-C"), destination};
         return true;
     case ArchiveKind::TarGz:
         *program = QStringLiteral("tar");
@@ -871,6 +879,10 @@ bool archiveListCommand(const QString &archivePath, const QString &password,
     case ArchiveKind::Zip:
         *program = QStringLiteral("unzip");
         *args = {QStringLiteral("-Z1"), archivePath};
+        return true;
+    case ArchiveKind::TarZst:
+        *program = QStringLiteral("tar");
+        *args = {QStringLiteral("--zstd"), QStringLiteral("-tf"), archivePath};
         return true;
     case ArchiveKind::TarGz:
         *program = QStringLiteral("tar");
@@ -2055,6 +2067,15 @@ int FileOperations::compressFiles(const QStringList &paths, const QString &forma
                 QStringLiteral("--")};
         for (const auto &p : paths)
             args.append(QFileInfo(p).fileName());
+    } else if (format == "tar.zst") {
+        QString outPath = parentDir + "/" + baseName + ".tar.zst";
+        outputPath = outPath;
+        program = QStringLiteral("tar");
+        // No short flag for zstd; tar shells out to the zstd binary.
+        args = {QStringLiteral("--zstd"), QStringLiteral("-cvf"), outPath,
+                QStringLiteral("-C"), parentDir, QStringLiteral("--")};
+        for (const auto &p : paths)
+            args.append(QFileInfo(p).fileName());
     } else if (format == "tar") {
         QString outPath = parentDir + "/" + baseName + ".tar";
         outputPath = outPath;
@@ -2310,6 +2331,7 @@ QString FileOperations::newExtractionFolder(const QString &archivePath)
     static const QStringList suffixes = {
         QStringLiteral(".tar.gz"), QStringLiteral(".tar.xz"), QStringLiteral(".tar.bz2"),
         QStringLiteral(".tar.zst"), QStringLiteral(".tgz"), QStringLiteral(".txz"),
+        QStringLiteral(".tzst"),
         QStringLiteral(".tbz2"), QStringLiteral(".tar"), QStringLiteral(".zip"),
         QStringLiteral(".7z"), QStringLiteral(".rar"), QStringLiteral(".gz"),
         QStringLiteral(".xz"), QStringLiteral(".bz2"), QStringLiteral(".zst")};

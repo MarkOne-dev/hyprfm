@@ -488,6 +488,9 @@ QVariantMap PreviewService::loadArchivePreview(const QString &path, int maxEntri
     if (lower.endsWith(".zip")) {
         program = "unzip";
         args = {"-Z1", path};
+    } else if (lower.endsWith(".tar.zst") || lower.endsWith(".tzst")) {
+        program = "tar";
+        args = {"--zstd", "-tf", path};
     } else if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) {
         program = "tar";
         args = {"-tzf", path};

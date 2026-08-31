@@ -711,6 +711,7 @@ Item {
                             { text: "tar.gz", shortcut: "", action: "compress_targz" },
                             { text: "tar.xz", shortcut: "", action: "compress_tarxz" },
                             { text: "tar.bz2", shortcut: "", action: "compress_tarbz2" },
+                            { text: "tar.zst", shortcut: "", action: "compress_tarzst" },
                             { text: "tar", shortcut: "", action: "compress_tar" }
                         ]
                     })
@@ -825,6 +826,7 @@ Item {
         case "compress_targz": fileOps.compressFiles(effectivePaths, "tar.gz"); break
         case "compress_tarxz": fileOps.compressFiles(effectivePaths, "tar.xz"); break
         case "compress_tarbz2": fileOps.compressFiles(effectivePaths, "tar.bz2"); break
+        case "compress_tarzst": fileOps.compressFiles(effectivePaths, "tar.zst"); break
         case "compress_tar": fileOps.compressFiles(effectivePaths, "tar"); break
         case "extract": fileOps.extractArchive(targetPath, effectiveDir, fileOps.archivePassword(targetPath)); break
         case "setwallpaper": fileOps.setWallpaper(targetPath); break
