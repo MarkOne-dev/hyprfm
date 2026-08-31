@@ -121,24 +121,47 @@ void RcloneService::mountRemote(const QString &remoteName)
     const QString mountPath = getMountPath(remoteName);
     QDir().mkpath(mountPath);
 
-    // Clean up any stale or lingering FUSE mounts asynchronously before starting
-    QProcess *unmountProc = new QProcess(this);
-    connect(unmountProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this, remoteName, mountPath, unmountProc](int exitCode) {
-        unmountProc->deleteLater();
-        if (exitCode != 0) {
-            QProcess *unmountProc3 = new QProcess(this);
-            connect(unmountProc3, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-                    [this, remoteName, mountPath, unmountProc3](int) {
-                unmountProc3->deleteLater();
-                startRcloneMountProcess(remoteName, mountPath);
-            });
-            unmountProc3->start(QStringLiteral("fusermount3"), {QStringLiteral("-u"), mountPath});
-        } else {
-            startRcloneMountProcess(remoteName, mountPath);
-        }
+    // Clear any stale mount left behind by an earlier run before starting.
+    releaseMountPoint(mountPath, [this, remoteName, mountPath]() {
+        startRcloneMountProcess(remoteName, mountPath);
     });
-    unmountProc->start(QStringLiteral("fusermount"), {QStringLiteral("-u"), mountPath});
+}
+
+// fusermount(1) belongs to libfuse2 and fusermount3(1) to libfuse3; a distro
+// ships one, the other, or neither. Try both and continue either way: a
+// cleanup that cannot run is no reason to strand the caller, and a missing
+// binary emits errorOccurred rather than finished, so a chain hung off
+// finished alone would simply stop here and never call anybody back.
+void RcloneService::releaseMountPoint(const QString &mountPath, const std::function<void()> &then)
+{
+    runUnmountTool(QStringLiteral("fusermount"), mountPath, [this, mountPath, then](bool ok) {
+        if (ok) {
+            then();
+            return;
+        }
+        runUnmountTool(QStringLiteral("fusermount3"), mountPath, [then](bool) { then(); });
+    });
+}
+
+void RcloneService::runUnmountTool(const QString &tool, const QString &mountPath,
+                                   const std::function<void(bool)> &done)
+{
+    QProcess *proc = new QProcess(this);
+    const auto settle = [proc, done](bool ok) {
+        proc->disconnect();
+        proc->deleteLater();
+        done(ok);
+    };
+
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [settle](int exitCode, QProcess::ExitStatus status) {
+        settle(status == QProcess::NormalExit && exitCode == 0);
+    });
+    connect(proc, &QProcess::errorOccurred, this, [settle](QProcess::ProcessError) {
+        settle(false);
+    });
+
+    proc->start(tool, {QStringLiteral("-u"), mountPath});
 }
 
 void RcloneService::startRcloneMountProcess(const QString &remoteName, const QString &mountPath)
@@ -259,23 +282,8 @@ void RcloneService::unmountRemote(const QString &remoteName)
     m_mountSuccessEmitted.remove(remoteName);
     emit activeMountsChanged();
 
-    // Call fusermount asynchronously to release FUSE mount points
-    const QString mountPath = getMountPath(remoteName);
-    QProcess *unmountProc = new QProcess(this);
-    connect(unmountProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this, remoteName, mountPath, unmountProc](int exitCode) {
-        unmountProc->deleteLater();
-        if (exitCode != 0) {
-            QProcess *unmountProc3 = new QProcess(this);
-            connect(unmountProc3, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-                    [this, remoteName, unmountProc3](int) {
-                unmountProc3->deleteLater();
-                emit unmountFinished(remoteName, true);
-            });
-            unmountProc3->start(QStringLiteral("fusermount3"), {QStringLiteral("-u"), mountPath});
-        } else {
-            emit unmountFinished(remoteName, true);
-        }
+    // Release the FUSE mount point without blocking the UI.
+    releaseMountPoint(getMountPath(remoteName), [this, remoteName]() {
+        emit unmountFinished(remoteName, true);
     });
-    unmountProc->start(QStringLiteral("fusermount"), {QStringLiteral("-u"), mountPath});
 }

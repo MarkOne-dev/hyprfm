@@ -6,6 +6,8 @@
 #include <QHash>
 #include <QProcess>
 
+#include <functional>
+
 class RcloneService : public QObject
 {
     Q_OBJECT
@@ -38,6 +40,9 @@ private:
     bool checkRcloneAvailable() const;
     void ensureMountsBaseDirExists() const;
     void startRcloneMountProcess(const QString &remoteName, const QString &mountPath);
+    void releaseMountPoint(const QString &mountPath, const std::function<void()> &then);
+    void runUnmountTool(const QString &tool, const QString &mountPath,
+                        const std::function<void(bool)> &done);
 
     bool m_rcloneAvailable;
     QString m_mountsBaseDir;
