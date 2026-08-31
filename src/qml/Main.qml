@@ -1298,6 +1298,7 @@ ApplicationWindow {
 
     Item {
         id: renameDialog
+        objectName: "renameDialog"
         anchors.fill: parent
         visible: false
         z: 1000
@@ -1380,7 +1381,7 @@ ApplicationWindow {
                     easing.type: Theme.animEasingExit; easing.bezierCurve: Theme.animBezierCurve
                 }
             }
-            ScriptAction { script: renameDialog.visible = false }
+            ScriptAction { script: { renameDialog.visible = false; root.scheduleActivePaneFocus() } }
         }
 
         MouseArea {
@@ -1472,6 +1473,7 @@ ApplicationWindow {
 
     Item {
         id: newFolderDialog
+        objectName: "newFolderDialog"
         anchors.fill: parent
         visible: false
         z: 1000
@@ -1547,7 +1549,7 @@ ApplicationWindow {
                     easing.type: Theme.animEasingExit; easing.bezierCurve: Theme.animBezierCurve
                 }
             }
-            ScriptAction { script: newFolderDialog.visible = false }
+            ScriptAction { script: { newFolderDialog.visible = false; root.scheduleActivePaneFocus() } }
         }
 
         MouseArea {
@@ -1637,6 +1639,7 @@ ApplicationWindow {
     // ── New File dialog ─────────────────────────────────────────────────────
     Item {
         id: newFileDialog
+        objectName: "newFileDialog"
         anchors.fill: parent
         visible: false
         z: 1000
@@ -1712,7 +1715,7 @@ ApplicationWindow {
                     easing.type: Theme.animEasingExit; easing.bezierCurve: Theme.animBezierCurve
                 }
             }
-            ScriptAction { script: newFileDialog.visible = false }
+            ScriptAction { script: { newFileDialog.visible = false; root.scheduleActivePaneFocus() } }
         }
 
         MouseArea {

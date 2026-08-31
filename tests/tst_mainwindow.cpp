@@ -460,6 +460,52 @@ private slots:
         QCOMPARE(dialog->property("checking").toBool(), false);
     }
 
+    // Closing an overlay has to hand keyboard focus back to the file view, or
+    // arrows and Backspace do nothing until you click something (issue #37).
+    // Only the properties dialog did; rename, new folder and new file did not.
+    void testClosingAnOverlayRestoresPaneFocus_data()
+    {
+        QTest::addColumn<QString>("opener");
+        QTest::addColumn<QString>("dialog");
+        QTest::newRow("rename") << "openRenameDialogForPath" << "renameDialog";
+        QTest::newRow("new folder") << "showNewFolderDialog" << "newFolderDialog";
+        QTest::newRow("new file") << "showNewFileDialog" << "newFileDialog";
+    }
+
+    void testClosingAnOverlayRestoresPaneFocus()
+    {
+        QFETCH(QString, opener);
+        QFETCH(QString, dialog);
+
+        App app;
+        QVERIFY(app.load());
+        QQuickItem *view = app.item(QStringLiteral("primaryFileView"));
+        QVERIFY(view);
+        QObject *root = app.window->contentItem()->parent();
+        QVERIFY(root);
+
+        QVERIFY(QMetaObject::invokeMethod(root, opener.toUtf8().constData(),
+                                          Q_ARG(QVariant, app.home.path() + "/x.txt")));
+        QTRY_VERIFY(app.window->activeFocusItem() != nullptr);
+
+        // Dismiss it the way Escape does.
+        QQuickItem *d = App::findItem(app.window->contentItem(), dialog);
+        QVERIFY2(d, qPrintable(dialog));
+        QVERIFY(QMetaObject::invokeMethod(d, "reject"));
+        QTRY_VERIFY(!d->isVisible());
+
+        QQuickItem *focused = app.window->activeFocusItem();
+        QVERIFY2(focused, "nothing has keyboard focus after closing the overlay");
+        bool insideView = false;
+        for (QQuickItem *i = focused; i; i = i->parentItem())
+            if (i == view)
+                insideView = true;
+        QVERIFY2(insideView, qPrintable(QStringLiteral("focus went to %1, not the file view")
+                                            .arg(focused->objectName().isEmpty()
+                                                 ? QString::fromLatin1(focused->metaObject()->className())
+                                                 : focused->objectName())));
+    }
+
     void testWheelOverTabStripScrollsTabsInTheFullWindow()
     {
         App app;
