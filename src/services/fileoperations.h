@@ -62,6 +62,7 @@ public:
     Q_INVOKABLE void openInEditor(const QString &path);
     Q_INVOKABLE bool pathExists(const QString &path) const;
     Q_INVOKABLE bool isRemotePath(const QString &path) const;
+    Q_INVOKABLE bool isSlowPath(const QString &path) const;
     Q_INVOKABLE QString parentPath(const QString &path) const;
     Q_INVOKABLE QString displayNameForPath(const QString &path) const;
     Q_INVOKABLE QVariantList breadcrumbSegments(const QString &path) const;

@@ -1596,11 +1596,13 @@ bool FileOperations::pathExists(const QString &path) const
 
 bool FileOperations::isRemotePath(const QString &path) const
 {
+    return isRemoteUriPath(normalizeLocation(path));
+}
+
+bool FileOperations::isSlowPath(const QString &path) const
+{
     static const QString prefix = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts/");
-    const QString normalized = normalizeLocation(path);
-    if (normalized.startsWith(prefix))
-        return true;
-    return isRemoteUriPath(normalized);
+    return normalizeLocation(path).startsWith(prefix);
 }
 
 QString FileOperations::parentPath(const QString &path) const

@@ -2017,7 +2017,7 @@ ApplicationWindow {
                 apps = []
 
             // Extract rich metadata
-            var md = fileOps.isRemotePath(path) ? ({}) : metadataExtractor.extract(path)
+            var md = (fileOps.isRemotePath(path) || fileOps.isSlowPath(path)) ? ({}) : metadataExtractor.extract(path)
             var keys = Object.keys(md)
             var result = []
             for (var i = 0; i < keys.length; ++i) {
@@ -2025,7 +2025,7 @@ ApplicationWindow {
                     result.push({ label: keys[i], value: String(md[keys[i]]) })
             }
             _metadataKeys = result
-            _metadataHint = fileOps.isRemotePath(path) ? "" : metadataExtractor.missingDepsHint(props.mimeType || "")
+            _metadataHint = (fileOps.isRemotePath(path) || fileOps.isSlowPath(path)) ? "" : metadataExtractor.missingDepsHint(props.mimeType || "")
 
             visible = true
             propsBox.opacity = 0

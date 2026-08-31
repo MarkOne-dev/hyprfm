@@ -49,31 +49,6 @@ void RcloneService::ensureMountsBaseDirExists() const
     QDir().mkpath(m_mountsBaseDir);
 }
 
-QStringList RcloneService::getRemotes()
-{
-    if (!m_rcloneAvailable)
-        return {};
-
-    QProcess proc;
-    proc.start(QStringLiteral("rclone"), {QStringLiteral("listremotes")});
-    if (proc.waitForFinished(3000)) {
-        QString out = QString::fromUtf8(proc.readAllStandardOutput());
-        QStringList list;
-        const QStringList lines = out.split(QLatin1Char('\n'));
-        for (const QString &line : lines) {
-            QString trimmed = line.trimmed();
-            if (trimmed.endsWith(QLatin1Char(':'))) {
-                trimmed.chop(1);
-            }
-            if (!trimmed.isEmpty()) {
-                list.append(trimmed);
-            }
-        }
-        return list;
-    }
-    return {};
-}
-
 bool RcloneService::isRclonePath(const QString &path) const
 {
     const QString prefix = m_mountsBaseDir + QStringLiteral("/");
@@ -138,15 +113,28 @@ void RcloneService::mountRemote(const QString &remoteName)
     const QString mountPath = getMountPath(remoteName);
     QDir().mkpath(mountPath);
 
-    // Clean up any stale or lingering FUSE mounts from previous sessions/crashes
-    QProcess unmountProc;
-    unmountProc.start(QStringLiteral("fusermount"), {QStringLiteral("-u"), mountPath});
-    if (!unmountProc.waitForFinished(500) || unmountProc.exitCode() != 0) {
-        QProcess unmountProc3;
-        unmountProc3.start(QStringLiteral("fusermount3"), {QStringLiteral("-u"), mountPath});
-        unmountProc3.waitForFinished(500);
-    }
+    // Clean up any stale or lingering FUSE mounts asynchronously before starting
+    QProcess *unmountProc = new QProcess(this);
+    connect(unmountProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, remoteName, mountPath, unmountProc](int exitCode) {
+        unmountProc->deleteLater();
+        if (exitCode != 0) {
+            QProcess *unmountProc3 = new QProcess(this);
+            connect(unmountProc3, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                    [this, remoteName, mountPath, unmountProc3](int) {
+                unmountProc3->deleteLater();
+                startRcloneMountProcess(remoteName, mountPath);
+            });
+            unmountProc3->start(QStringLiteral("fusermount3"), {QStringLiteral("-u"), mountPath});
+        } else {
+            startRcloneMountProcess(remoteName, mountPath);
+        }
+    });
+    unmountProc->start(QStringLiteral("fusermount"), {QStringLiteral("-u"), mountPath});
+}
 
+void RcloneService::startRcloneMountProcess(const QString &remoteName, const QString &mountPath)
+{
     QProcess *proc = new QProcess(this);
     m_processes.insert(remoteName, proc);
     m_mountSuccessEmitted[remoteName] = false;
@@ -250,27 +238,36 @@ void RcloneService::unmountRemote(const QString &remoteName)
     QProcess *proc = m_processes.value(remoteName);
     if (proc) {
         disconnect(proc, nullptr, this, nullptr);
+        connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), proc, &QObject::deleteLater);
         proc->terminate();
-        if (!proc->waitForFinished(2000)) {
-            proc->kill();
-        }
-        proc->deleteLater();
+        QTimer::singleShot(2000, proc, [proc]() {
+            if (proc->state() != QProcess::NotRunning) {
+                proc->kill();
+            }
+        });
     }
 
     m_processes.remove(remoteName);
     m_mountSuccessEmitted.remove(remoteName);
     emit activeMountsChanged();
 
-    // Call fusermount -u to cleanly release FUSE mount points (standard on Linux)
+    // Call fusermount asynchronously to release FUSE mount points
     const QString mountPath = getMountPath(remoteName);
-    QProcess unmountProc;
-    unmountProc.start(QStringLiteral("fusermount"), {QStringLiteral("-u"), mountPath});
-    if (!unmountProc.waitForFinished(2000) || unmountProc.exitCode() != 0) {
-        // Fallback to fusermount3 if standard fusermount fails
-        QProcess unmountProc3;
-        unmountProc3.start(QStringLiteral("fusermount3"), {QStringLiteral("-u"), mountPath});
-        unmountProc3.waitForFinished(2000);
-    }
-
-    emit unmountFinished(remoteName, true);
+    QProcess *unmountProc = new QProcess(this);
+    connect(unmountProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, remoteName, mountPath, unmountProc](int exitCode) {
+        unmountProc->deleteLater();
+        if (exitCode != 0) {
+            QProcess *unmountProc3 = new QProcess(this);
+            connect(unmountProc3, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                    [this, remoteName, unmountProc3](int) {
+                unmountProc3->deleteLater();
+                emit unmountFinished(remoteName, true);
+            });
+            unmountProc3->start(QStringLiteral("fusermount3"), {QStringLiteral("-u"), mountPath});
+        } else {
+            emit unmountFinished(remoteName, true);
+        }
+    });
+    unmountProc->start(QStringLiteral("fusermount"), {QStringLiteral("-u"), mountPath});
 }

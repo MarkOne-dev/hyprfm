@@ -19,7 +19,6 @@ public:
     bool rcloneAvailable() const;
     QStringList activeMounts() const;
 
-    Q_INVOKABLE QStringList getRemotes();
     Q_INVOKABLE bool isRclonePath(const QString &path) const;
     Q_INVOKABLE bool isMounted(const QString &remoteName) const;
     Q_INVOKABLE bool isMounting(const QString &remoteName) const;
@@ -38,6 +37,7 @@ signals:
 private:
     bool checkRcloneAvailable() const;
     void ensureMountsBaseDirExists() const;
+    void startRcloneMountProcess(const QString &remoteName, const QString &mountPath);
 
     bool m_rcloneAvailable;
     QString m_mountsBaseDir;

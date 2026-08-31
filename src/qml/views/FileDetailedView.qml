@@ -63,7 +63,7 @@ FocusScope {
         for (var i = first; i <= last; ++i) {
             if (isDirForRow(i)) {
                 var p = pathForRow(i)
-                if (p && !fileOps.isRemotePath(p))
+                if (p && !fileOps.isRemotePath(p) && !fileOps.isSlowPath(p))
                     paths.push(p)
             }
         }
@@ -1017,7 +1017,7 @@ FocusScope {
                             height: root.detailIconSize
                             anchors.verticalCenter: parent.verticalCenter
 
-                            readonly property bool hasThumbnail: !fileOps.isRemotePath(detRow.filePath)
+                            readonly property bool hasThumbnail: !fileOps.isRemotePath(detRow.filePath) && !fileOps.isSlowPath(detRow.filePath)
                                 && (detRow.hasImagePreview || detRow.hasVideoPreview
                                     || detRow.hasPdfPreview)
 
