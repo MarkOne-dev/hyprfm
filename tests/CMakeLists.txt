@@ -207,6 +207,7 @@ add_executable(tst_mainwindow tst_mainwindow.cpp
     ${CMAKE_SOURCE_DIR}/src/services/previewservice.cpp
     ${CMAKE_SOURCE_DIR}/src/services/diskusageservice.cpp
     ${CMAKE_SOURCE_DIR}/src/services/remoteaccessservice.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/rcloneservice.cpp
     ${CMAKE_SOURCE_DIR}/src/services/runtimefeaturesservice.cpp
     ${CMAKE_SOURCE_DIR}/src/services/dependencychecker.cpp
     ${CMAKE_SOURCE_DIR}/src/services/gitstatusservice.cpp
