@@ -20,11 +20,22 @@ RcloneService::RcloneService(QObject *parent)
 
 RcloneService::~RcloneService()
 {
-    // Clean up all active mounts on app exit
+    // unmountRemote() drives fusermount through the event loop, and by the
+    // time we are destroyed there is no event loop left to run it: the
+    // unmount would never happen and ~QProcess would SIGKILL rclone with the
+    // FUSE mount still attached, leaving a dead mount point behind. Detach
+    // fusermount so it outlives us, then ask rclone to go away.
     const QStringList remotes = m_processes.keys();
     for (const QString &remote : remotes) {
-        unmountRemote(remote);
+        const QString mountPath = getMountPath(remote);
+        if (!QProcess::startDetached(QStringLiteral("fusermount"), {QStringLiteral("-u"), mountPath}))
+            QProcess::startDetached(QStringLiteral("fusermount3"), {QStringLiteral("-u"), mountPath});
+
+        QProcess *proc = m_processes.value(remote);
+        if (proc && proc->state() != QProcess::NotRunning)
+            proc->terminate();
     }
+    m_processes.clear();
 }
 
 bool RcloneService::rcloneAvailable() const
