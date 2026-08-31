@@ -32,6 +32,26 @@ Rectangle {
     property real diskTotal: -1
     property bool isLoading: false
 
+    // A local directory lists in a few milliseconds, so showing the spinner the
+    // moment a load starts only flashes the item count off and straight back on
+    // every navigation. Wait until a load is slow enough to be worth reporting.
+    property bool showLoading: false
+
+    Timer {
+        id: loadingDelay
+        interval: 300
+        onTriggered: statusBar.showLoading = true
+    }
+
+    onIsLoadingChanged: {
+        if (statusBar.isLoading) {
+            loadingDelay.restart()
+        } else {
+            loadingDelay.stop()
+            statusBar.showLoading = false
+        }
+    }
+
     height: 28
     color: Theme.mantle
     clip: false
@@ -77,7 +97,7 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            visible: statusBar.isLoading
+            visible: statusBar.showLoading
             spacing: 6
 
             Rectangle {
@@ -101,7 +121,7 @@ Rectangle {
                     to: 360
                     duration: 1000
                     loops: Animation.Infinite
-                    running: statusBar.isLoading
+                    running: statusBar.showLoading
                 }
             }
 
@@ -115,7 +135,7 @@ Rectangle {
 
         Text {
             Layout.fillWidth: true
-            visible: !statusBar.isLoading
+            visible: !statusBar.showLoading
             text: {
                 const files = statusBar.itemCount - statusBar.folderCount
                 return statusBar.itemCount + " items (" + statusBar.folderCount + " folders, " + files + " files)"
