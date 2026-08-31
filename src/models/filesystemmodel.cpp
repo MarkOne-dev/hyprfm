@@ -1359,9 +1359,12 @@ void FileSystemModel::ensurePopulated(const Entry &entry) const
     const bool isRemote = isCloudMountPath(absPath);
 
     if (isRemote) {
-        entry.permissionsText = isDir ? QStringLiteral("drwxr-xr-x") : QStringLiteral("-rw-r--r--");
-        entry.owner = QStringLiteral("cloud");
-        entry.group = QStringLiteral("cloud");
+        // A FUSE mount reports the mounting user for every entry and stats
+        // cost a round trip, so none of this is worth fetching. Leave it
+        // blank the way trash entries do rather than invent plausible values.
+        entry.permissionsText = QString();
+        entry.owner = QString();
+        entry.group = QString();
         entry.createdText = QString();
         entry.accessedText = QString();
     } else {
@@ -1654,14 +1657,12 @@ QVariantMap FileSystemModel::fileProperties(const QString &path) const
         props["modified"] = QLocale().toString(info.lastModified(), QLocale::LongFormat);
         props["accessed"] = QString();
 
-        props["owner"] = QStringLiteral("cloud");
-        props["group"] = QStringLiteral("cloud");
-
-        props["permissions"] = info.isDir() ? QStringLiteral("drwxr-xr-x") : QStringLiteral("-rw-r--r--");
-
-        props["ownerAccess"] = 2;
-        props["groupAccess"] = 1;
-        props["otherAccess"] = 1;
+        props["owner"] = QString();
+        props["group"] = QString();
+        props["permissions"] = QString();
+        props["ownerAccess"] = 0;
+        props["groupAccess"] = 0;
+        props["otherAccess"] = 0;
         props["isExecutable"] = false;
         props["canEditPermissions"] = false;
     } else {
