@@ -1,5 +1,7 @@
 #include "services/rcloneservice.h"
 
+#include "services/cloudmounts.h"
+
 #include <QDir>
 #include <QStandardPaths>
 #include <QTimer>
@@ -16,7 +18,7 @@ RcloneService::RcloneService(QObject *parent)
     : QObject(parent)
 {
     m_rcloneAvailable = checkRcloneAvailable();
-    m_mountsBaseDir = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts");
+    m_mountsBaseDir = cloudMountsBaseDir();
     ensureMountsBaseDirExists();
 }
 
@@ -51,8 +53,7 @@ void RcloneService::ensureMountsBaseDirExists() const
 
 bool RcloneService::isRclonePath(const QString &path) const
 {
-    const QString prefix = m_mountsBaseDir + QStringLiteral("/");
-    return path.startsWith(prefix) && path.length() > prefix.length();
+    return isCloudMountPath(path);
 }
 
 bool RcloneService::isMounted(const QString &remoteName) const

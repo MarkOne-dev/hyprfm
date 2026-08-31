@@ -1,4 +1,5 @@
 #include "models/filesystemmodel.h"
+#include "services/cloudmounts.h"
 #include "services/gitstatusservice.h"
 #include "services/xdgtrash.h"
 #include <QLocale>
@@ -288,8 +289,8 @@ QString iconNameForMimeName(const QString &mimeName)
 
 QMimeType mimeTypeForFile(const QString &path)
 {
-    static const QString prefix = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts/");
-    if (path.startsWith(prefix)) {
+    // Content sniffing on a FUSE mount means a network round trip per entry.
+    if (isCloudMountPath(path)) {
         return mimeDb().mimeTypeForFile(path, QMimeDatabase::MatchExtension);
     }
     return mimeDb().mimeTypeForFile(path, QMimeDatabase::MatchDefault);
@@ -1355,8 +1356,7 @@ void FileSystemModel::ensurePopulated(const Entry &entry) const
     entry.sizeText = isDir ? QString() : formattedSize(entry.info.size());
     entry.modifiedText = QLocale().toString(entry.info.lastModified(), QLocale::ShortFormat);
 
-    static const QString prefix = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts/");
-    const bool isRemote = absPath.startsWith(prefix);
+    const bool isRemote = isCloudMountPath(absPath);
 
     if (isRemote) {
         entry.permissionsText = isDir ? QStringLiteral("drwxr-xr-x") : QStringLiteral("-rw-r--r--");
@@ -1573,8 +1573,7 @@ QVariantMap FileSystemModel::fileProperties(const QString &path) const
     if (isRemoteUri(normalizedPath))
         return remoteFileProperties(normalizedPath);
 
-    static const QString prefix = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts/");
-    const bool isRemote = normalizedPath.startsWith(prefix);
+    const bool isRemote = isCloudMountPath(normalizedPath);
 
     QFileInfo info(normalizedPath);
     QVariantMap props;

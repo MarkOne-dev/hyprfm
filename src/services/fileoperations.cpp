@@ -1,5 +1,6 @@
 #include "services/fileoperations.h"
 #include "services/archivepassword.h"
+#include "services/cloudmounts.h"
 #include "services/giotransferworker.h"
 #include "services/xdgtrash.h"
 #include <QBuffer>
@@ -1709,8 +1710,7 @@ bool FileOperations::isRemotePath(const QString &path) const
 
 bool FileOperations::isSlowPath(const QString &path) const
 {
-    static const QString prefix = QDir::homePath() + QStringLiteral("/.local/share/hyprfm/mounts/");
-    return normalizeLocation(path).startsWith(prefix);
+    return isCloudMountPath(normalizeLocation(path));
 }
 
 QString FileOperations::parentPath(const QString &path) const
