@@ -2269,6 +2269,11 @@ int FileOperations::extractArchive(const QString &archivePath, const QString &de
 
             QList<QByteArray> outputLines;
             qint64 processed = 0;
+            // "Extract Here" unpacks into a folder that already holds files —
+            // the archive itself among them. Measure the growth from here, not
+            // everything the folder happens to contain, or the bar reports the
+            // whole directory against the archive's size and sails past 100%.
+            const qint64 baselineBytes = byteBased ? dirTotalBytes(destination) : 0;
             QElapsedTimer sizeScanTimer;
             sizeScanTimer.start();
             while (pr.state() != QProcess::NotRunning || pr.bytesAvailable()) {
@@ -2284,7 +2289,8 @@ int FileOperations::extractArchive(const QString &archivePath, const QString &de
                 if (byteBased) {
                     if (sizeScanTimer.elapsed() >= 250) {
                         sizeScanTimer.restart();
-                        const qint64 extracted = dirTotalBytes(destination);
+                        const qint64 extracted =
+                            qMax<qint64>(dirTotalBytes(destination) - baselineBytes, 0);
                         processed = qMax(processed, extracted);
                         report(static_cast<int>(processed >> 16),
                                static_cast<int>(reportTotal), {});
@@ -2418,6 +2424,13 @@ void FileOperations::clearArchivePassword(const QString &archivePath)
     m_archivePasswords.remove(archivePath);
 }
 
+double FileOperations::progressFraction(int current, int total)
+{
+    if (total <= 0)
+        return -1.0;
+    return qBound(0.0, static_cast<double>(current) / total, 1.0);
+}
+
 bool FileOperations::isArchive(const QString &path)
 {
     return archiveKindForPath(path) != ArchiveKind::None;
@@ -2525,7 +2538,7 @@ int FileOperations::startSimpleOperation(const QString &statusText, const QStrin
     auto reportProgress = [this, id](int current, int total, const QString &fileName) {
         QMetaObject::invokeMethod(this, [this, id, current, total, fileName]() {
             if (auto *t = findTransfer(id)) {
-                t->progress = total > 0 ? static_cast<double>(current) / total : -1.0;
+                t->progress = progressFraction(current, total);
                 t->currentFile = fileName;
                 emitAggregatedState();
             }

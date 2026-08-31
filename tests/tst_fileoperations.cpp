@@ -1494,6 +1494,81 @@ private slots:
                  qPrintable(finishSpy.at(0).at(1).toString()));
     }
 
+    void testProgressNeverExceedsOneHundredPercent_data()
+    {
+        QTest::addColumn<QString>("format");
+        QTest::addColumn<QString>("extension");
+        QTest::addColumn<QString>("tool");
+        QTest::newRow("7z") << "7z" << ".7z" << "7z";
+        QTest::newRow("zip") << "zip" << ".zip" << "zip";
+        QTest::newRow("tar.gz") << "tar.gz" << ".tar.gz" << "tar";
+        QTest::newRow("tar.zst") << "tar.zst" << ".tar.zst" << "zstd";
+    }
+
+    void testProgressNeverExceedsOneHundredPercent()
+    {
+        QFETCH(QString, format);
+        QFETCH(QString, extension);
+        QFETCH(QString, tool);
+        if (QStandardPaths::findExecutable(tool).isEmpty())
+            QSKIP(qPrintable(tool + " not found in PATH"));
+
+        TestDir dir;
+        TestDir extractDir;
+        dir.createDir("payload");
+        for (int i = 0; i < 12; ++i)
+            dir.createFile(QStringLiteral("payload/f%1.dat").arg(i), QByteArray(120000, 'a' + i));
+
+        FileOperations ops;
+        QSignalSpy finishSpy(&ops, &FileOperations::operationFinished);
+        QVERIFY(ops.compressFiles({dir.path() + "/payload"}, format) >= 0);
+        QTRY_VERIFY_WITH_TIMEOUT(finishSpy.count() > 0, 30000);
+        QVERIFY(finishSpy.at(0).at(0).toBool());
+        finishSpy.clear();
+
+        double worst = 0.0;
+        QObject::connect(&ops, &FileOperations::activeTransfersChanged, &ops, [&ops, &worst]() {
+            worst = qMax(worst, ops.progress());
+        });
+
+        QVERIFY(ops.extractArchive(dir.path() + "/payload" + extension,
+                                   extractDir.path()) >= 0);
+        QTRY_VERIFY_WITH_TIMEOUT(finishSpy.count() > 0, 30000);
+        QVERIFY(finishSpy.at(0).at(0).toBool());
+
+        qInfo() << format << "peak progress" << worst;
+        QVERIFY2(worst <= 1.001, qPrintable(
+            QStringLiteral("%1 reported %2%").arg(format).arg(worst * 100.0)));
+    }
+
+    // The progress bar reached 500% while extracting (issue #38): byte-based
+    // progress counted every byte already in the destination — "Extract Here"
+    // unpacks into the folder the archive itself sits in — against the
+    // archive's own size. The count now starts from what was already there,
+    // and the fraction is clamped so no future miscount can overshoot either.
+    void testProgressFractionNeverExceedsFull_data()
+    {
+        QTest::addColumn<int>("current");
+        QTest::addColumn<int>("total");
+        QTest::addColumn<double>("expected");
+
+        QTest::newRow("start") << 0 << 100 << 0.0;
+        QTest::newRow("half") << 50 << 100 << 0.5;
+        QTest::newRow("full") << 100 << 100 << 1.0;
+        // The values the bar actually reported when it showed 387%.
+        QTest::newRow("overshoot") << 9920 << 2560 << 1.0;
+        QTest::newRow("negative") << -5 << 100 << 0.0;
+        QTest::newRow("no total") << 5 << 0 << -1.0;
+    }
+
+    void testProgressFractionNeverExceedsFull()
+    {
+        QFETCH(int, current);
+        QFETCH(int, total);
+        QFETCH(double, expected);
+        QCOMPARE(FileOperations::progressFraction(current, total), expected);
+    }
+
     void testCompressionDoesNotExecuteFileNames_data()
     {
         QTest::addColumn<QString>("format");

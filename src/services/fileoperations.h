@@ -89,6 +89,10 @@ public:
     Q_INVOKABLE void clearArchivePassword(const QString &archivePath);
     Q_INVOKABLE QString newExtractionFolder(const QString &archivePath);
     Q_INVOKABLE static bool isArchive(const QString &path);
+    // A reported (current, total) as a fraction for the UI: always 0..1, or
+    // -1 when there is no total to measure against. Clamped here because a
+    // miscounted total should slow the bar down, never send it past full.
+    static double progressFraction(int current, int total);
     Q_INVOKABLE QString archiveRootFolder(const QString &archivePath);
     Q_INVOKABLE void setWallpaper(const QString &path);
     Q_INVOKABLE void setHyprlandRounding(const QString &windowTitle, int radius);
