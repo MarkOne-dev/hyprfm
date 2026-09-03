@@ -149,6 +149,14 @@ private:
     void reloadTrash();
     void cancelRemoteReload();
     void applyRemoteReload(const QString &rootPath, const QByteArray &output);
+    bool applyRemoteDiff(const QList<QVariantMap> &newEntries);
+    struct RemoteParsingResult {
+        QList<QVariantMap> entries;
+        int fileCount = 0;
+        int folderCount = 0;
+    };
+    RemoteParsingResult parseRemoteOutput(const QString &rootPath, const QByteArray &output) const;
+    void applyRemoteParsedEntries(const QString &rootPath, const QList<QVariantMap> &entries, int fileCount, int folderCount);
     // Local scans go through a QtConcurrent future so the GUI thread never
     // blocks on QDir::entryInfoList. Generation counter ensures stale
     // results (user navigated away mid-scan) are discarded.
