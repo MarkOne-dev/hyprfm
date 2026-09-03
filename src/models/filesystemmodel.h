@@ -157,6 +157,7 @@ private:
     };
     RemoteParsingResult parseRemoteOutput(const QString &rootPath, const QByteArray &output) const;
     void applyRemoteParsedEntries(const QString &rootPath, const QList<QVariantMap> &entries, int fileCount, int folderCount);
+    void prefetchSubdirectories();
     // Local scans go through a QtConcurrent future so the GUI thread never
     // blocks on QDir::entryInfoList. Generation counter ensures stale
     // results (user navigated away mid-scan) are discarded.

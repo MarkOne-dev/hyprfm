@@ -1188,6 +1188,7 @@ void FileSystemModel::applyLocalReload(LocalReloadResult result, bool tryDiff)
         cached.fileCount = m_fileCount;
         cached.folderCount = m_folderCount;
         m_slowPathCache.insert(m_rootPath, cached);
+        prefetchSubdirectories();
     }
 
     setIsLoading(false);
@@ -2353,5 +2354,45 @@ void FileSystemModel::invalidateRemoteCache(const QString &path)
     } else {
         m_remoteDirCache.remove(path);
         m_slowPathCache.remove(path);
+    }
+}
+void FileSystemModel::prefetchSubdirectories()
+{
+    if (m_rootPath.isEmpty())
+        return;
+
+    if (isCloudMountPath(m_rootPath)) {
+        int prefetched = 0;
+        for (const Entry &entry : std::as_const(m_entries)) {
+            if (prefetched >= 5)
+                break;
+            if (!entry.info.isDir())
+                continue;
+
+            const QString childPath = entry.info.absoluteFilePath();
+            if (childPath.isEmpty() || m_slowPathCache.contains(childPath))
+                continue;
+
+            ++prefetched;
+            const bool showHidden = m_showHidden;
+            const QDir::SortFlags sortFlags = m_sortFlags;
+
+            QtConcurrent::run([this, childPath, showHidden, sortFlags]() {
+                LocalReloadResult res = scanLocalEntries(0, childPath, showHidden, sortFlags);
+                int files = 0, folders = 0;
+                for (const Entry &e : std::as_const(res.entries)) {
+                    if (e.info.isDir()) ++folders; else ++files;
+                }
+
+                QMetaObject::invokeMethod(this, [this, childPath, entries = std::move(res.entries), files, folders]() mutable {
+                    CachedLocalDirectory cached;
+                    cached.timestamp = QDateTime::currentMSecsSinceEpoch();
+                    cached.entries = std::move(entries);
+                    cached.fileCount = files;
+                    cached.folderCount = folders;
+                    m_slowPathCache.insert(childPath, cached);
+                }, Qt::QueuedConnection);
+            });
+        }
     }
 }
