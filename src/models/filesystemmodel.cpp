@@ -2358,6 +2358,12 @@ void FileSystemModel::invalidateRemoteCache(const QString &path)
     } else {
         m_remoteDirCache.remove(path);
         m_slowPathCache.remove(path);
+
+        const QString parentPath = QFileInfo(path).absolutePath();
+        if (!parentPath.isEmpty() && parentPath != path) {
+            m_remoteDirCache.remove(parentPath);
+            m_slowPathCache.remove(parentPath);
+        }
     }
 }
 void FileSystemModel::clearPrefetchWatchers()
