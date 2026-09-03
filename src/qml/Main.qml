@@ -3943,6 +3943,11 @@ ApplicationWindow {
             diskUsageService.invalidatePaths(paths)
             if (propertiesDialog.visible && propertiesDialog.props.path)
                 propertiesDialog.refreshFolderDiskUsage()
+
+            for (var i = 0; i < paths.length; ++i) {
+                fsModel.invalidateRemoteCache(paths[i])
+                splitFsModel.invalidateRemoteCache(paths[i])
+            }
         }
 
         function onPasswordRequested(archivePath, destination, retry) {

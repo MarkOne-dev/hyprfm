@@ -91,6 +91,7 @@ public:
     Q_INVOKABLE QString homePath() const;
     Q_INVOKABLE QString standardPath(const QString &key) const;
     Q_INVOKABLE QVariantList pathSuggestions(const QString &input, int limit = 8) const;
+    Q_INVOKABLE void invalidateRemoteCache(const QString &path = QString());
 
     // Tests need a predictable "rowCount is correct right after setRootPath()"
     // guarantee, so expose a switch that runs local scans on the calling
@@ -194,7 +195,7 @@ private:
         int folderCount = 0;
     };
 
-    void invalidateRemoteCache(const QString &path = QString());
+
 
     mutable QHash<QString, CachedRemoteDirectory> m_remoteDirCache;
     mutable QHash<QString, CachedLocalDirectory> m_slowPathCache;

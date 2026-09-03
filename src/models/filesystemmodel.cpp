@@ -944,6 +944,7 @@ void FileSystemModel::sortByColumn(const QString &column, bool ascending)
 
 void FileSystemModel::refresh()
 {
+    invalidateRemoteCache(m_rootPath);
     if (isTrashRoot()) {
         reload();
         return;
@@ -1004,6 +1005,7 @@ QString FileSystemModel::fileName(int row) const
 
 void FileSystemModel::reload()
 {
+    invalidateRemoteCache(m_rootPath);
     setIsLoading(true);
     cancelRemoteReload();
     ++m_remoteReloadGeneration;
