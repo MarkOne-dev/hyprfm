@@ -551,7 +551,16 @@ ApplicationWindow {
         if (rcloneService.isRclonePath(path)) {
             var remote = rcloneService.getRemoteNameFromPath(path)
             if (!rcloneService.isMounted(remote)) {
-                pendingCloudCallbacks.push({ remote: remote, callback: callback })
+                var exists = false
+                for (var i = 0; i < pendingCloudCallbacks.length; ++i) {
+                    if (pendingCloudCallbacks[i].remote === remote) {
+                        exists = true
+                        break
+                    }
+                }
+                if (!exists)
+                    pendingCloudCallbacks.push({ remote: remote, callback: callback })
+
                 if (!rcloneService.isMounting(remote)) {
                     toast.show("Mounting cloud storage '" + remote + "'...", "info")
                     rcloneService.mountRemote(remote)

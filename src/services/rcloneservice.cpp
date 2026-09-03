@@ -174,24 +174,28 @@ void RcloneService::startRcloneMountProcess(const QString &remoteName, const QSt
     emit activeMountsChanged();
 
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this, remoteName, proc](int exitCode, QProcess::ExitStatus) {
+            [this, remoteName, mountPath, proc](int exitCode, QProcess::ExitStatus) {
         const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
         m_processes.remove(remoteName);
         emit activeMountsChanged();
 
         if (!m_mountSuccessEmitted.value(remoteName)) {
+            if (QDir(mountPath).exists())
+                QDir(mountPath).removeRecursively();
             emit mountFinished(remoteName, false, err.isEmpty() ? QStringLiteral("rclone mount exited unexpectedly.") : err);
         }
         m_mountSuccessEmitted.remove(remoteName);
         proc->deleteLater();
     });
 
-    connect(proc, &QProcess::errorOccurred, this, [this, remoteName, proc](QProcess::ProcessError) {
+    connect(proc, &QProcess::errorOccurred, this, [this, remoteName, mountPath, proc](QProcess::ProcessError) {
         const QString err = proc->errorString();
         m_processes.remove(remoteName);
         emit activeMountsChanged();
 
         if (!m_mountSuccessEmitted.value(remoteName)) {
+            if (QDir(mountPath).exists())
+                QDir(mountPath).removeRecursively();
             emit mountFinished(remoteName, false, err);
         }
         m_mountSuccessEmitted.remove(remoteName);

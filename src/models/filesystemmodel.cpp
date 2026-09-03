@@ -595,6 +595,7 @@ FileSystemModel::FileSystemModel(QObject *parent)
 
 FileSystemModel::~FileSystemModel()
 {
+    clearPrefetchWatchers();
     cancelRemoteReload();
     cancelLocalReload();
 }
@@ -1153,6 +1154,7 @@ void FileSystemModel::scheduleLocalReload(bool tryDiff)
 
 void FileSystemModel::cancelLocalReload()
 {
+    clearPrefetchWatchers();
     if (!m_localReloadWatcher)
         return;
     m_localReloadWatcher->disconnect(this);
@@ -2356,10 +2358,28 @@ void FileSystemModel::invalidateRemoteCache(const QString &path)
         m_slowPathCache.remove(path);
     }
 }
+void FileSystemModel::clearPrefetchWatchers()
+{
+    for (auto *watcher : m_prefetchWatchers) {
+        if (!watcher) continue;
+        watcher->disconnect();
+        watcher->deleteLater();
+    }
+    m_prefetchWatchers.clear();
+}
+
 void FileSystemModel::prefetchSubdirectories()
 {
     if (m_rootPath.isEmpty())
         return;
+
+    static const int kMaxCacheEntries = 50;
+    if (m_slowPathCache.size() > kMaxCacheEntries) {
+        m_slowPathCache.clear();
+    }
+    if (m_remoteDirCache.size() > kMaxCacheEntries) {
+        m_remoteDirCache.clear();
+    }
 
     if (isCloudMountPath(m_rootPath)) {
         int prefetched = 0;
@@ -2377,22 +2397,32 @@ void FileSystemModel::prefetchSubdirectories()
             const bool showHidden = m_showHidden;
             const QDir::SortFlags sortFlags = m_sortFlags;
 
-            QtConcurrent::run([this, childPath, showHidden, sortFlags]() {
-                LocalReloadResult res = scanLocalEntries(0, childPath, showHidden, sortFlags);
+            auto future = QtConcurrent::run([childPath, showHidden, sortFlags]() {
+                return scanLocalEntries(0, childPath, showHidden, sortFlags);
+            });
+
+            auto *watcher = new QFutureWatcher<LocalReloadResult>(this);
+            m_prefetchWatchers.append(watcher);
+
+            connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, childPath]() {
+                m_prefetchWatchers.removeOne(watcher);
+                const LocalReloadResult res = watcher->result();
+                watcher->deleteLater();
+
                 int files = 0, folders = 0;
                 for (const Entry &e : std::as_const(res.entries)) {
                     if (e.info.isDir()) ++folders; else ++files;
                 }
 
-                QMetaObject::invokeMethod(this, [this, childPath, entries = std::move(res.entries), files, folders]() mutable {
-                    CachedLocalDirectory cached;
-                    cached.timestamp = QDateTime::currentMSecsSinceEpoch();
-                    cached.entries = std::move(entries);
-                    cached.fileCount = files;
-                    cached.folderCount = folders;
-                    m_slowPathCache.insert(childPath, cached);
-                }, Qt::QueuedConnection);
+                CachedLocalDirectory cached;
+                cached.timestamp = QDateTime::currentMSecsSinceEpoch();
+                cached.entries = res.entries;
+                cached.fileCount = files;
+                cached.folderCount = folders;
+                m_slowPathCache.insert(childPath, cached);
             });
+
+            watcher->setFuture(future);
         }
     }
 }
