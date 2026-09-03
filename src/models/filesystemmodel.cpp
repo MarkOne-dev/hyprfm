@@ -889,13 +889,13 @@ void FileSystemModel::setRootPath(const QString &path)
         return;
 
     // Stop watching old directory
-    if (!m_rootPath.isEmpty() && !isTrashRoot() && !isRemoteRoot())
+    if (!m_rootPath.isEmpty() && !isTrashRoot() && !isRemoteRoot() && !isCloudMountPath(m_rootPath))
         m_watcher.removePath(m_rootPath);
 
     m_rootPath = normalizedPath;
 
     // Watch new directory
-    if (!m_rootPath.isEmpty() && !isTrashRoot() && !isRemoteRoot())
+    if (!m_rootPath.isEmpty() && !isTrashRoot() && !isRemoteRoot() && !isCloudMountPath(m_rootPath))
         m_watcher.addPath(m_rootPath);
 
     reload();
@@ -1118,14 +1118,18 @@ void FileSystemModel::scheduleLocalReload(bool tryDiff)
         return;
     }
 
-    if (!m_localReloadWatcher) {
-        m_localReloadWatcher = new QFutureWatcher<LocalReloadResult>(this);
-        connect(m_localReloadWatcher, &QFutureWatcherBase::finished, this, [this]() {
-            if (!m_localReloadWatcher)
-                return;
-            applyLocalReload(m_localReloadWatcher->result(), m_localReloadTryDiff);
-        });
+    if (m_localReloadWatcher) {
+        m_localReloadWatcher->disconnect(this);
+        m_localReloadWatcher->deleteLater();
+        m_localReloadWatcher = nullptr;
     }
+
+    m_localReloadWatcher = new QFutureWatcher<LocalReloadResult>(this);
+    connect(m_localReloadWatcher, &QFutureWatcherBase::finished, this, [this]() {
+        if (!m_localReloadWatcher)
+            return;
+        applyLocalReload(m_localReloadWatcher->result(), m_localReloadTryDiff);
+    });
 
     auto future = QtConcurrent::run(&FileSystemModel::scanLocalEntries,
                                     gen, m_rootPath, m_showHidden, m_sortFlags);
@@ -1137,7 +1141,8 @@ void FileSystemModel::cancelLocalReload()
     if (!m_localReloadWatcher)
         return;
     m_localReloadWatcher->disconnect(this);
-    m_localReloadWatcher->waitForFinished();
+    m_localReloadWatcher->deleteLater();
+    m_localReloadWatcher = nullptr;
     setIsLoading(false);
 }
 
