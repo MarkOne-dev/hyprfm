@@ -169,6 +169,25 @@ private:
     const QVariantMap *findTrashEntry(const QString &path) const;
     void setIsLoading(bool loading);
 
+    struct CachedRemoteDirectory {
+        qint64 timestamp = 0;
+        QList<QVariantMap> entries;
+        int fileCount = 0;
+        int folderCount = 0;
+    };
+
+    struct CachedLocalDirectory {
+        qint64 timestamp = 0;
+        QList<Entry> entries;
+        int fileCount = 0;
+        int folderCount = 0;
+    };
+
+    void invalidateRemoteCache(const QString &path = QString());
+
+    mutable QHash<QString, CachedRemoteDirectory> m_remoteDirCache;
+    mutable QHash<QString, CachedLocalDirectory> m_slowPathCache;
+
     // QStorageInfo for rootPath, or an invalid one where reporting a disk
     // would mislead.
     QStorageInfo rootStorage() const;

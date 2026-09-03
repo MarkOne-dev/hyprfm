@@ -1106,6 +1106,21 @@ FileSystemModel::LocalReloadResult FileSystemModel::scanLocalEntries(
 
 void FileSystemModel::scheduleLocalReload(bool tryDiff)
 {
+    if (!m_rootPath.isEmpty() && isCloudMountPath(m_rootPath) && m_slowPathCache.contains(m_rootPath)) {
+        const auto &cached = m_slowPathCache.value(m_rootPath);
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - cached.timestamp < 120000) {
+            beginResetModel();
+            m_entries = cached.entries;
+            m_fileCount = cached.fileCount;
+            m_folderCount = cached.folderCount;
+            endResetModel();
+            emit countsChanged();
+            setIsLoading(false);
+            return;
+        }
+    }
+
     setIsLoading(true);
     const quint64 gen = ++m_localReloadGeneration;
     m_localReloadTryDiff = tryDiff;
@@ -1165,6 +1180,16 @@ void FileSystemModel::applyLocalReload(LocalReloadResult result, bool tryDiff)
     updateLocalCounts();
     endResetModel();
     emit countsChanged();
+
+    if (isCloudMountPath(m_rootPath)) {
+        CachedLocalDirectory cached;
+        cached.timestamp = QDateTime::currentMSecsSinceEpoch();
+        cached.entries = m_entries;
+        cached.fileCount = m_fileCount;
+        cached.folderCount = m_folderCount;
+        m_slowPathCache.insert(m_rootPath, cached);
+    }
+
     setIsLoading(false);
 }
 
@@ -1174,6 +1199,21 @@ void FileSystemModel::reloadRemote()
         m_fileCount = 0;
         m_folderCount = 0;
         return;
+    }
+
+    if (m_remoteDirCache.contains(m_rootPath)) {
+        const auto &cached = m_remoteDirCache.value(m_rootPath);
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - cached.timestamp < 120000) {
+            beginResetModel();
+            m_remoteEntries = cached.entries;
+            m_fileCount = cached.fileCount;
+            m_folderCount = cached.folderCount;
+            endResetModel();
+            emit countsChanged();
+            setIsLoading(false);
+            return;
+        }
     }
 
     setIsLoading(true);
@@ -1322,6 +1362,14 @@ void FileSystemModel::applyRemoteReload(const QString &rootPath, const QByteArra
     m_folderCount = folders;
     endResetModel();
     emit countsChanged();
+
+    CachedRemoteDirectory cached;
+    cached.timestamp = QDateTime::currentMSecsSinceEpoch();
+    cached.entries = m_remoteEntries;
+    cached.fileCount = m_fileCount;
+    cached.folderCount = m_folderCount;
+    m_remoteDirCache.insert(rootPath, cached);
+
     setIsLoading(false);
 }
 
@@ -2179,4 +2227,15 @@ QVariantList FileSystemModel::pathSuggestions(const QString &input, int limit) c
     }
 
     return suggestions;
+}
+
+void FileSystemModel::invalidateRemoteCache(const QString &path)
+{
+    if (path.isEmpty()) {
+        m_remoteDirCache.clear();
+        m_slowPathCache.clear();
+    } else {
+        m_remoteDirCache.remove(path);
+        m_slowPathCache.remove(path);
+    }
 }
